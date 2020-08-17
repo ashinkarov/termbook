@@ -1,25 +1,19 @@
-//extern crate hyphenation;
-//extern crate textwrap;
-
 use hyphenation::{Hyphenator,Language, Load, Standard};
-//use textwrap::Wrapper;
 use quick_xml::{Reader};
 use quick_xml::events::Event;
-//use ansi_term::{Style};
 
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
 use termion::{style,color,terminal_size};
+
 use std::io::{BufRead, Write, stdout, stdin};
 use std::mem;
 
-use clap::{Arg,App,app_from_crate,
+use clap::{Arg,app_from_crate,
            crate_name,crate_version,crate_authors,crate_description};
 
 use anyhow::{Context,Result};
-//use std::io::BufReader;
-//use std::fs::File;
 
 //#[derive(PartialEq, Clone, Copy)]
 struct WriterState {
@@ -46,7 +40,7 @@ impl WriterState {
         self.pos = 0;
         self.lines_xml_offsets.push((self.xml_txt_count, self.xml_txt_off));
     }
-    fn dprint(&self) {
+    fn _dprint(&self) {
         print!("line: {}, pos: {}, eof: {}", self.line, self.pos, self.eof);
     }
 }
@@ -61,7 +55,7 @@ impl OutText for Standard {
         let mut chars_left = state.line_width - state.pos;
         let mut line = state.line;
 
-        
+
         // FIXME this is a hack, as we need to check that the last unicode
         // character is a whitespace kind of thing.
         let last_space = s.ends_with(" ");
@@ -98,7 +92,7 @@ impl OutText for Standard {
                         //let t = mem::replace(&mut state.l, String::from(""));
                         //state.lines.push(t);
                         state.l.push_str (tail);
-                        
+
                         // update xml_txt_off with the current word count `i`
                         state.xml_txt_off = i;
 
@@ -108,7 +102,7 @@ impl OutText for Standard {
                         break;
                     }
                 }
-    
+
                 // If we didn't find the hyphenation, break right here
                 if !hyp_found {
                     state.line_done();
@@ -130,7 +124,7 @@ impl OutText for Standard {
                             // long.  We may deal with this by making the xml_pos
                             // structure a bit more precise.
                             state.lines_xml_offsets.push((state.xml_txt_count,
-                                                          state.xml_txt_off));   
+                                                          state.xml_txt_off));
                             chars_left = state.line_width - l.len();
                             line += 1;
 
@@ -144,14 +138,14 @@ impl OutText for Standard {
 
             }
         }
-        
+
         if last_space {
             // FIXME check that we are not negative.
             //print!(" ");
             state.l.push_str (" ");
             chars_left -= 1;
         }
-        
+
         state.line = line;
         state.pos = state.line_width - chars_left;
 
@@ -183,7 +177,7 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
             Ok(Event::Start(ref e)) => {
                 match e.name() {
                     b"description" => { skip = true; }
-                    b"p" => { 
+                    b"p" => {
                         // FIXME this looks weird, don't we need to make
                         // the line in the hyphenator shorter?
                         let s = "    ";
@@ -203,12 +197,12 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
             Ok(Event::End(ref e)) => {
                 match e.name() {
                     b"description" => { skip = false; }
-                    b"p" => { 
+                    b"p" => {
                         ws.line_done();
                         //(for now) ws.lines.push(String::from(""));
 
                     }
-                    b"emphasis" => { 
+                    b"emphasis" => {
                         ws.l.push_str (&st_nobold.to_string());
                     }
                     b"title" => {
@@ -276,7 +270,7 @@ fn main () -> Result<()> {
     let input = app.value_of("input").unwrap();
     let mut reader = Reader::from_file(input)
                      .with_context(|| format!("cannot open file `{}'", input))?;
-    
+
     let hyphenator = Standard::from_embedded(Language::Russian)?;
 
     // get terminal size
@@ -288,15 +282,14 @@ fn main () -> Result<()> {
     let lines = Vec::new();
     let lines_xml_offsets = Vec::new();
     let l = String::from("");
-    let mut ws = WriterState { line: 0, pos: 0, 
+    let mut ws = WriterState { line: 0, pos: 0,
                                line_width: core::cmp::min((w-8).into(),80),
-                               l: l, 
+                               l: l,
                                lines: lines,
                                lines_xml_offsets: lines_xml_offsets,
                                eof: false,
                                xml_txt_count: 0,
                                xml_txt_off: 0};
-    //let mut loopc = 0;
 
 
     // Here starts the termion example
@@ -322,17 +315,7 @@ fn main () -> Result<()> {
     lines_idx += print_n_lines(&mut ws, lines_idx, (h-1).into());
     stdout.flush()?;
 
-    // fill the first screen of the terminal with the text
-    //fill_screen(&mut reader, &hyphenator, &mut ws, lines_idx, h);
-
-
     for c in stdin.keys() {
-        // write!(stdout,
-        //        "{}{}",
-        //        termion::cursor::Goto(1, 1),
-        //        termion::clear::CurrentLine)
-        //         .unwrap();
-
         match c.unwrap() {
             Key::Char('q') => break,
             Key::Char(c) => println!("{}", c),
@@ -348,7 +331,7 @@ fn main () -> Result<()> {
                 lines_idx = lines_idx.saturating_sub(h as usize);
                 lines_idx += print_n_lines(&mut ws, lines_idx, (h-1).into())
             }
-            Key::Down => { 
+            Key::Down => {
                 //println!("the length of ws.lines = {}\r\n", ws.lines.len());
                 //if ws.eof {
                 //    continue;
@@ -357,7 +340,7 @@ fn main () -> Result<()> {
                   crank(&mut reader, &hyphenator, &mut ws, 10);
                 }
                 lines_idx += print_n_lines(&mut ws, lines_idx, 1);
-                //ws.dprint(); print!("\r"); 
+                //ws.dprint(); print!("\r");
             }
                 //println!("↓"),
             Key::Backspace => println!("×"),
@@ -368,74 +351,4 @@ fn main () -> Result<()> {
 
     write!(stdout, "{}", termion::cursor::Show)?;
     Ok(())
-    /*
-    loop {
-        match reader.read_event(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                match e.name() {
-                    b"p" => { 
-                        //ws = hyphenator.out (&"  ", ws);
-                        let s = "    ";
-                        print!("{}", s);
-                        ws.pos = s.len();
-                    },
-                    b"emphasis" => {
-                        print!("{}", st_bold.prefix());
-                    },
-                    _ => (),
-                }
-            },
-            Ok(Event::End(ref e)) => {
-                match e.name() {
-                    b"p" => { 
-                        //in_p = false;
-                        println!("");
-
-                    }
-                    b"emphasis" => { 
-                        //in_emph = false; 
-                        print!("{}", st_bold.suffix());
-                    }
-                    _ => (),
-                }
-            },
-
-            Ok(Event::Text(e)) => {
-                loopc += 1;
-                let t = e.unescape_and_decode(&reader).unwrap();
-                ws = hyphenator.out (&t, ws);
-                // if in_emph {
-                //     let emph_t = Style::new().bold().paint(t).to_string();
-                //     p.push_str (&emph_t);
-                // } else {
-                //     p.push_str (&t);
-                // }
-                if loopc > 200 {
-
-                    //break;
-                }
-            },
-            Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
-            Ok(Event::Eof) => break,
-            _ => (),
-        }
-    }
-    buf.clear();
-    */
-
-
-    // FIXME use textwrap::termwidth() for the width of the terminal
-    // let wrapper = Wrapper::with_splitter(80, hyphenator);
-    // 
-    // let mut count = 0;
-    // for t in &txt {
-    //     count = count + 1;
-    //     //println!("count: {}", count);
-    //     if count < 12 {
-    //         println!("{}|\n", t); // wrapper.fill(t));
-    //     }
-    // }
-
-    //let text = "textwrap: a small library for wrapping text.";
-    //println!("{}", wrapper.fill(text))
 }
