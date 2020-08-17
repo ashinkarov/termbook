@@ -3,7 +3,7 @@
 
 use hyphenation::{Hyphenator,Language, Load, Standard};
 //use textwrap::Wrapper;
-use quick_xml::Reader;
+use quick_xml::{Reader};
 use quick_xml::events::Event;
 //use ansi_term::{Style};
 
@@ -14,7 +14,10 @@ use termion::{style,color,terminal_size};
 use std::io::{BufRead, Write, stdout, stdin};
 use std::mem;
 
+use clap::{Arg,App,app_from_crate,
+           crate_name,crate_version,crate_authors,crate_description};
 
+use anyhow::{Context,Result};
 //use std::io::BufReader;
 //use std::fs::File;
 
@@ -24,8 +27,16 @@ struct WriterState {
     pub pos: usize,
     pub line_width: usize,
     pub l: String,
+    // We keep the buffer that we have processed so far
+    // and the xml offsets for each line, for a more precise
+    // reloading.  XXX put them together in one Vec?
     pub lines: Vec<String>,
+    pub lines_xml_offsets: Vec<(usize, usize)>,
     pub eof: bool,
+    // We use these fields to annotate the lines with their positions
+    // in the xml document, so that we could restore it on the next load.
+    pub xml_txt_count : usize,  // count text tags in the xml stream
+    pub xml_txt_off : usize,    // offset within the text
 }
 
 impl WriterState {
@@ -33,6 +44,10 @@ impl WriterState {
         let t = mem::replace(&mut self.l, String::from(""));
         self.lines.push(t);
         self.pos = 0;
+        self.lines_xml_offsets.push((self.xml_txt_count, self.xml_txt_off));
+    }
+    fn dprint(&self) {
+        print!("line: {}, pos: {}, eof: {}", self.line, self.pos, self.eof);
     }
 }
 
@@ -42,14 +57,10 @@ trait OutText {
 }
 
 impl OutText for Standard {
-    // FIXME note that currently this function is rather slow
-    //       as we are calling print! for every word!
     fn out (&self, s: &str, state: &mut WriterState) -> () { //WriterState {
         let mut chars_left = state.line_width - state.pos;
         let mut line = state.line;
 
-        // FIXME Wrirte style begin
-        
         
         // FIXME this is a hack, as we need to check that the last unicode
         // character is a whitespace kind of thing.
@@ -87,6 +98,9 @@ impl OutText for Standard {
                         //let t = mem::replace(&mut state.l, String::from(""));
                         //state.lines.push(t);
                         state.l.push_str (tail);
+                        
+                        // update xml_txt_off with the current word count `i`
+                        state.xml_txt_off = i;
 
                         chars_left = state.line_width - tail.chars().count();
                         hyp_found = true;
@@ -97,10 +111,10 @@ impl OutText for Standard {
     
                 // If we didn't find the hyphenation, break right here
                 if !hyp_found {
-                    //print!("\r\n");
-                    //let t = mem::replace(&mut state.l, String::from(""));
-                    //state.lines.push(t);
                     state.line_done();
+                    // update xml_txt_off with the current word count `i`
+                    state.xml_txt_off = i;
+
                     line += 1;
                     // If `w` is crazily long, we'll just break in the middle
                     if wlen > state.line_width {
@@ -109,8 +123,14 @@ impl OutText for Standard {
                         let v: Vec<_> = w.chars().collect();
                         for l in v.chunks (state.line_width) {
                             let t = l.iter().collect::<String>();
-                            //print!("{}\r\n", t);
+                            // FIXME refactor to use line_done here.
                             state.lines.push(t);
+                            // FIXME here the information about the xml position
+                            // of the line is quite imprecise, as the word is too
+                            // long.  We may deal with this by making the xml_pos
+                            // structure a bit more precise.
+                            state.lines_xml_offsets.push((state.xml_txt_count,
+                                                          state.xml_txt_off));   
                             chars_left = state.line_width - l.len();
                             line += 1;
 
@@ -152,25 +172,29 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
     let c_title = color::Fg(color::LightBlue);
     let c_reset = color::Fg(color::Reset);
 
+    // XXX this is a hack to skip the text contained in tags that
+    // we don't care about.  We set the skip flag on the beginning
+    // of the tag, and unset it at the end.
+    let mut skip = false;
+
     let l = ws.line + count;
-    while ws.line < l {
+    while !ws.eof && ws.line < l {
         match reader.read_event(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 match e.name() {
+                    b"description" => { skip = true; }
                     b"p" => { 
+                        // FIXME this looks weird, don't we need to make
+                        // the line in the hyphenator shorter?
                         let s = "    ";
-                        //print!("{}", s);
                         ws.l.push_str(s);
                         ws.pos = s.len();
                     },
                     b"emphasis" => {
-                        //print!("{}", st_bold.prefix());
-                        //ws.l.push_str (&st_bold.prefix().to_string());
-                        //ws.l.push_str (&st_bold.to_string());
                         ws.l.push_str (&st_bold.to_string());
                     },
                     b"title" => {
-                        ws.lines.push(String::from(""));
+                        //(for now) ws.lines.push(String::from(""));
                         ws.l.push_str (&c_title.to_string());
                     }
                     _ => (),
@@ -178,21 +202,17 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
             },
             Ok(Event::End(ref e)) => {
                 match e.name() {
+                    b"description" => { skip = false; }
                     b"p" => { 
-                        //print!("\r\n\r\n");
-                        //let t = mem::replace(&mut ws.l, String::from(""));
-                        //ws.lines.push(t);
                         ws.line_done();
-                        ws.lines.push(String::from(""));
+                        //(for now) ws.lines.push(String::from(""));
 
                     }
                     b"emphasis" => { 
-                        //print!("{}", st_bold.suffix());
-                        //ws.l.push_str (&st_bold.suffix().to_string());
                         ws.l.push_str (&st_nobold.to_string());
                     }
                     b"title" => {
-                        ws.lines.push(String::from(""));
+                        //(for now) ws.lines.push(String::from(""));
                         ws.l.push_str (&c_reset.to_string());
                     }
                     _ => (),
@@ -200,14 +220,16 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
             },
 
             Ok(Event::Text(e)) => {
-                let t = e.unescape_and_decode(&reader).unwrap();
-                hyphenator.out (&t, ws);
+                if !skip {
+                  let t = e.unescape_and_decode(&reader).unwrap();
+                  ws.xml_txt_count += 1;
+                  ws.xml_txt_off = 0;
+                  hyphenator.out (&t, ws);
+                }
             },
             Err(e) => panic!("Error at position {}: {:?}",
                                 reader.buffer_position(), e),
             Ok(Event::Eof) => {
-                //let t = mem::replace(&mut ws.l, String::from(""));
-                //ws.lines.push(t);
                 ws.line_done();
                 ws.eof = true;
                 break
@@ -226,49 +248,60 @@ fn print_n_lines (ws : &mut WriterState,
 
     let mut i = 0;
     while start_idx + i < ws.lines.len() && i < lines {
-        print!("    {}\r\n", ws.lines[start_idx+i]);
+        let xo = ws.lines_xml_offsets[start_idx+i];
+        print!("{:<4}{:<4}    {}\r\n", xo.0, xo.1, ws.lines[start_idx+i]);
         i += 1;
     }
     let wrote = i;
-    while i < lines {
+    /* while i < lines {
         print!("    ~\r\n");
-        i+= 1;
-    }
+        i += 1;
+    } */
     return wrote;
 }
 
 
-fn main () {
-    // Error handling for file reading later.
-    //let f1 = match File::open("x.fb2") {
-    //    Err(e) => panic!("Error {}", e),
-    //    Ok(f) => f
-    //};
-    //let reader = BufReader::new(f1);
 
-    let mut reader = Reader::from_file("x.fb2").unwrap();
-    //reader.trim_text(true);
-    //let mut txt = Vec::new();
+fn main () -> Result<()> {
+    let app = app_from_crate!()
+             .arg(
+                Arg::with_name("input")
+                    .help("input file containing the fb2 book")
+                    .index(1)
+                    .required(true),
+              )
+              .get_matches();
+
+
+    let input = app.value_of("input").unwrap();
+    let mut reader = Reader::from_file(input)
+                     .with_context(|| format!("cannot open file `{}'", input))?;
     
-    let hyphenator = Standard::from_embedded(Language::Russian).unwrap();
+    let hyphenator = Standard::from_embedded(Language::Russian)?;
 
-
-
-    // FIXME Create a struct with fields
-    //let mut in_p = false;
-    //let mut in_emph = false;
-    //let mut p = "".to_owned();
+    // get terminal size
+    let (w, h) = terminal_size()?;
+    // FIXME in some cases when the terminal is ridiculously
+    // small we have to give an error message or simply dump
+    // the text without much formatting.
 
     let lines = Vec::new();
+    let lines_xml_offsets = Vec::new();
     let l = String::from("");
-    let mut ws = WriterState { line: 0, pos: 0, line_width: 80,
-                               l: l, lines: lines, eof: false };
+    let mut ws = WriterState { line: 0, pos: 0, 
+                               line_width: core::cmp::min((w-8).into(),80),
+                               l: l, 
+                               lines: lines,
+                               lines_xml_offsets: lines_xml_offsets,
+                               eof: false,
+                               xml_txt_count: 0,
+                               xml_txt_off: 0};
     //let mut loopc = 0;
 
 
     // Here starts the termion example
     let stdin = stdin();
-    let mut stdout = stdout().into_raw_mode().unwrap();
+    let mut stdout = stdout().into_raw_mode()?;
 
     // So far this is our index into the ws.lines which we use
     // when KeyDown is pressed, so that we know how much lines
@@ -281,19 +314,13 @@ fn main () {
            termion::cursor::Goto(1, 1),
            termion::cursor::Hide)
            .unwrap();
-    stdout.flush().unwrap();
+    stdout.flush()?;
 
-    // get terminal size
-    let (w, h) = match terminal_size() {
-        Err(e) => panic!("error: {}", e),
-        Ok(r) => r
-    };
-    // FIXME in some cases when the terminal is ridiculously
-    // small we have to give an error message or simply dump
-    // the text without much formatting.
-    //println!("teminal size is: {} x {}", w, h);
+    //print!("teminal size is: {} x {}\r\n", w, h);
+    // print the initial screen of text.
     crank(&mut reader, &hyphenator, &mut ws, h.into());
-    lines_idx += print_n_lines(&mut ws, lines_idx, (h-2).into());
+    lines_idx += print_n_lines(&mut ws, lines_idx, (h-1).into());
+    stdout.flush()?;
 
     // fill the first screen of the terminal with the text
     //fill_screen(&mut reader, &hyphenator, &mut ws, lines_idx, h);
@@ -314,25 +341,23 @@ fn main () {
             Key::Esc => println!("ESC"),
             Key::Left => println!("←"),
             Key::Right => println!("→"),
-            Key::Up => println!("↑"),
+            Key::Up => {
+                //println!("↑");
+                //termion::scroll::Up(5);
+                termion::cursor::Goto(1,1);
+                lines_idx = lines_idx.saturating_sub(h as usize);
+                lines_idx += print_n_lines(&mut ws, lines_idx, (h-1).into())
+            }
             Key::Down => { 
                 //println!("the length of ws.lines = {}\r\n", ws.lines.len());
-                if ws.eof {
-                    continue;
+                //if ws.eof {
+                //    continue;
+                //}
+                if lines_idx+1 >= ws.lines.len() {
+                  crank(&mut reader, &hyphenator, &mut ws, 10);
                 }
-                crank(&mut reader, &hyphenator, &mut ws, 1);
                 lines_idx += print_n_lines(&mut ws, lines_idx, 1);
-
-                /*
-                if lines_idx >= ws.lines.len() {
-                  //println! ("cranking\r\n");
-                  crank (&mut reader, &hyphenator, &mut ws, 5);
-                  //println!("now ws.lines = {}\r\n", ws.lines.len());
-                }
-                // FIXME Only if we didn't yet exhaust the stream.
-                print!("    {}\r\n", ws.lines[lines_idx]);
-                lines_idx += 1;
-                */
+                //ws.dprint(); print!("\r"); 
             }
                 //println!("↓"),
             Key::Backspace => println!("×"),
@@ -341,7 +366,8 @@ fn main () {
         stdout.flush().unwrap();
     }
 
-    write!(stdout, "{}", termion::cursor::Show).unwrap();
+    write!(stdout, "{}", termion::cursor::Show)?;
+    Ok(())
     /*
     loop {
         match reader.read_event(&mut buf) {
