@@ -13,9 +13,24 @@ use std::mem;
 use clap::{Arg,app_from_crate,
            crate_name,crate_version,crate_authors,crate_description};
 
-use anyhow::{Context,Result};
+use anyhow::{Context};
 
-//#[derive(PartialEq, Clone, Copy)]
+use serde::{Serialize, Deserialize};
+use std::collections::BTreeMap;
+
+// FIXME use this in the WriterState as well
+#[derive(Serialize, Deserialize, Debug)]
+struct BookState {
+    tag_count: usize,
+    word_offset: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TBconfig {
+    books: BTreeMap<String, BookState>,
+}
+
+#[derive(Debug)]
 struct WriterState {
     pub line : usize,
     pub pos: usize,
@@ -250,13 +265,15 @@ fn print_n_lines (ws : &mut WriterState,
     /* while i < lines {
         print!("    ~\r\n");
         i += 1;
-    } */
+   / } */
     return wrote;
 }
 
 
+//use yaml_rust::{YamlLoader, YamlEmitter, Yaml};
+//use std::fs::{File, read_to_string};
 
-fn main () -> Result<()> {
+fn main () -> anyhow::Result<()> {
     let app = app_from_crate!()
              .arg(
                 Arg::with_name("input")
@@ -266,11 +283,28 @@ fn main () -> Result<()> {
               )
               .get_matches();
 
+    // Read the config file for the termbook, including
+    // the state of the books that we have ever read.
+    let config_fname = "setting.yml";
+    let config_file = std::fs::File::open(config_fname)
+        .with_context(|| format!("cannot open settings `{}'", config_fname))?;
+    let mut tbconf: TBconfig 
+        = serde_yaml::from_reader(std::io::BufReader::new(config_file))?;
 
+    // The location of the book that we are about to open.
     let input = app.value_of("input").unwrap();
     let mut reader = Reader::from_file(input)
                      .with_context(|| format!("cannot open file `{}'", input))?;
 
+    // Get absolute path of the book --- we use it as a key in the file
+    // that keeps states (tag_offset and word offset).
+    let input_rel = std::path::PathBuf::from(input);
+    let input_abs = std::fs::canonicalize(&input_rel).unwrap()
+                    .into_os_string().into_string().unwrap();
+
+
+    // TODO: parse <description> of the book and choose the appropriate
+    // language, and possible get other meta-information.
     let hyphenator = Standard::from_embedded(Language::Russian)?;
 
     // get terminal size
@@ -283,7 +317,7 @@ fn main () -> Result<()> {
     let lines_xml_offsets = Vec::new();
     let l = String::from("");
     let mut ws = WriterState { line: 0, pos: 0,
-                               line_width: core::cmp::min((w-8).into(),80),
+                               line_width: core::cmp::min((w-12).into(),80),
                                l: l,
                                lines: lines,
                                lines_xml_offsets: lines_xml_offsets,
@@ -309,7 +343,28 @@ fn main () -> Result<()> {
            .unwrap();
     stdout.flush()?;
 
-    //print!("teminal size is: {} x {}\r\n", w, h);
+    // check whether we have a saved position of that book in 
+    // the config file.
+    if tbconf.books.contains_key(&input_abs) {
+        // TODO add validation of the stored data, e.g. if the offset
+        // in the config file is completely bogus.
+        let bstate = tbconf.books.get(&input_abs).unwrap();
+        // read enough text
+        while !ws.eof
+              // TODO abstract into lexicographical comparison
+              && (ws.xml_txt_count < bstate.tag_count
+                  || ws.xml_txt_count == bstate.tag_count
+                     &&  ws.xml_txt_off < bstate.word_offset) {
+            crank(&mut reader, &hyphenator, &mut ws, 100);
+        }
+        // find the index of the line that is "closest" to the
+        // saved state.
+        lines_idx = ws.lines_xml_offsets.iter()
+                    .rposition(|&p| p.0 <= bstate.tag_count
+                                    && p.1 <= bstate.word_offset)
+                    .unwrap();
+        //panic!();
+    }
     // print the initial screen of text.
     crank(&mut reader, &hyphenator, &mut ws, h.into());
     lines_idx += print_n_lines(&mut ws, lines_idx, (h-1).into());
@@ -317,7 +372,21 @@ fn main () -> Result<()> {
 
     for c in stdin.keys() {
         match c.unwrap() {
-            Key::Char('q') => break,
+            Key::Char('q') => {
+                // offset of the first visible line on the screen.
+                assert!(h>=1);
+                let (t, o) = ws.lines_xml_offsets[lines_idx.saturating_sub((h-1) as usize)];
+                // add or update the book position.
+                tbconf.books.insert(input_abs,
+                                    BookState {tag_count: t, word_offset: o});
+
+                // save the config into the yaml file.
+                let config_file = std::fs::OpenOptions::new()
+                                  .write(true).open(config_fname)?;
+                serde_yaml::to_writer(std::io::BufWriter::new(&config_file), &tbconf)?;
+                config_file.sync_all()?;
+                break
+            }
             Key::Char(c) => println!("{}", c),
             Key::Alt(c) => println!("^{}", c),
             Key::Ctrl(c) => println!("*{}", c),
@@ -325,8 +394,6 @@ fn main () -> Result<()> {
             Key::Left => println!("←"),
             Key::Right => println!("→"),
             Key::Up => {
-                //println!("↑");
-                //termion::scroll::Up(5);
                 termion::cursor::Goto(1,1);
                 lines_idx = lines_idx.saturating_sub(h as usize);
                 lines_idx += print_n_lines(&mut ws, lines_idx, (h-1).into())
@@ -342,7 +409,6 @@ fn main () -> Result<()> {
                 lines_idx += print_n_lines(&mut ws, lines_idx, 1);
                 //ws.dprint(); print!("\r");
             }
-                //println!("↓"),
             Key::Backspace => println!("×"),
             _ => {}
         }
