@@ -257,6 +257,7 @@ fn print_n_lines (ws : &mut WriterState,
 
     let mut i = 0;
     while start_idx + i < ws.lines.len() && i < lines {
+        // XXX this is only for debugging, we will get rid of xml offsets.
         let xo = ws.lines_xml_offsets[start_idx+i];
         print!("{:<4}{:<4}    {}\r\n", xo.0, xo.1, ws.lines[start_idx+i]);
         i += 1;
@@ -270,9 +271,6 @@ fn print_n_lines (ws : &mut WriterState,
 }
 
 
-//use yaml_rust::{YamlLoader, YamlEmitter, Yaml};
-//use std::fs::{File, read_to_string};
-
 fn main () -> anyhow::Result<()> {
     let app = app_from_crate!()
              .arg(
@@ -283,12 +281,15 @@ fn main () -> anyhow::Result<()> {
               )
               .get_matches();
 
+    // TODO add a flag that can specify where the settings live,
+    // and use some default location, using xdg defaults.
+    //
     // Read the config file for the termbook, including
     // the state of the books that we have ever read.
-    let config_fname = "setting.yml";
+    let config_fname = "settings.yml";
     let config_file = std::fs::File::open(config_fname)
         .with_context(|| format!("cannot open settings `{}'", config_fname))?;
-    let mut tbconf: TBconfig 
+    let mut tbconf: TBconfig
         = serde_yaml::from_reader(std::io::BufReader::new(config_file))?;
 
     // The location of the book that we are about to open.
@@ -313,6 +314,7 @@ fn main () -> anyhow::Result<()> {
     // small we have to give an error message or simply dump
     // the text without much formatting.
 
+    // Prepare the state structure for the xml parser.
     let lines = Vec::new();
     let lines_xml_offsets = Vec::new();
     let l = String::from("");
@@ -326,7 +328,7 @@ fn main () -> anyhow::Result<()> {
                                xml_txt_off: 0};
 
 
-    // Here starts the termion example
+    // Prepare to start termion with terminal in raw mode.
     let stdin = stdin();
     let mut stdout = stdout().into_raw_mode()?;
 
@@ -336,14 +338,14 @@ fn main () -> anyhow::Result<()> {
     let mut lines_idx = 0;
 
     write!(stdout,
-           "{}{}{}", //q to exit. Type stuff, use alt, and so on.{}",
+           "{}{}{}",
            termion::clear::All,
            termion::cursor::Goto(1, 1),
            termion::cursor::Hide)
            .unwrap();
     stdout.flush()?;
 
-    // check whether we have a saved position of that book in 
+    // check whether we have a saved position of that book in
     // the config file.
     if tbconf.books.contains_key(&input_abs) {
         // TODO add validation of the stored data, e.g. if the offset
@@ -363,8 +365,8 @@ fn main () -> anyhow::Result<()> {
                     .rposition(|&p| p.0 <= bstate.tag_count
                                     && p.1 <= bstate.word_offset)
                     .unwrap();
-        //panic!();
     }
+
     // print the initial screen of text.
     crank(&mut reader, &hyphenator, &mut ws, h.into());
     lines_idx += print_n_lines(&mut ws, lines_idx, (h-1).into());
@@ -387,12 +389,12 @@ fn main () -> anyhow::Result<()> {
                 config_file.sync_all()?;
                 break
             }
-            Key::Char(c) => println!("{}", c),
+            /*Key::Char(c) => println!("{}", c),
             Key::Alt(c) => println!("^{}", c),
             Key::Ctrl(c) => println!("*{}", c),
             Key::Esc => println!("ESC"),
             Key::Left => println!("←"),
-            Key::Right => println!("→"),
+            Key::Right => println!("→"),*/
             Key::Up => {
                 termion::cursor::Goto(1,1);
                 lines_idx = lines_idx.saturating_sub(h as usize);
@@ -409,7 +411,7 @@ fn main () -> anyhow::Result<()> {
                 lines_idx += print_n_lines(&mut ws, lines_idx, 1);
                 //ws.dprint(); print!("\r");
             }
-            Key::Backspace => println!("×"),
+            //Key::Backspace => println!("×"),
             _ => {}
         }
         stdout.flush().unwrap();
