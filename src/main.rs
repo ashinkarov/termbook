@@ -309,15 +309,21 @@ fn main () -> anyhow::Result<()> {
     let hyphenator = Standard::from_embedded(Language::Russian)?;
 
     // get terminal size
-    let (w, h) = terminal_size()?;
+    //
     // FIXME in some cases when the terminal is ridiculously
     // small we have to give an error message or simply dump
     // the text without much formatting.
+    let (w16, h16) = terminal_size()?;
+    // Convert the u16 size into usize.
+    let w = w16 as usize;
+    let h = h16 as usize;
 
     // Prepare the state structure for the xml parser.
     let lines = Vec::new();
     let l = String::from("");
+    assert!(w>12);
     let mut ws = WriterState { line: 0, pos: 0,
+                               // TODO use config to set maxline.
                                line_width: core::cmp::min((w-12).into(),80),
                                l: l,
                                lines: lines,
@@ -346,8 +352,6 @@ fn main () -> anyhow::Result<()> {
     // check whether we have a saved position of that book in
     // the config file.
     if tbconf.books.contains_key(&input_abs) {
-        // TODO add validation of the stored data, e.g. if the offset
-        // in the config file is completely bogus.
         let bstate = tbconf.books.get(&input_abs).unwrap();
         // read enough text
         while !ws.eof
@@ -359,6 +363,10 @@ fn main () -> anyhow::Result<()> {
         }
         // find the index of the line that is "closest" to the
         // saved state.
+        //    - If we don't find the offset that is smaller
+        //      than the stored one, we start from the beginning of the book.
+        //    - If the offset is too large (bogus config file) we'll end-up
+        //      at the last line of the book.
         lines_idx = ws.lines.iter()
                     .rposition(|p| match p.xml_offset {
                                       Some(o) => o.tag_count <= bstate.tag_count
@@ -369,18 +377,17 @@ fn main () -> anyhow::Result<()> {
     }
 
     // print the initial screen of text.
-    crank(&mut reader, &hyphenator, &mut ws, h.into());
-    lines_idx += print_n_lines(&mut ws, lines_idx, (h-1).into());
+    // TODO lift this validation up.
+    assert!(h>1);
+    crank(&mut reader, &hyphenator, &mut ws, h);
+    lines_idx += print_n_lines(&mut ws, lines_idx, h-1);
     stdout.flush()?;
 
     for c in stdin.keys() {
         match c.unwrap() {
             Key::Char('q') => {
-                // offset of the first visible line on the screen.
-                assert!(h>=1);
-                //let s = ws.lines[lines_idx.saturating_sub((h-1) as usize)].xml_offset;
-                // Grab first non-empty offset, or (0,0) in case we don't have any.
-                let mut i = lines_idx.saturating_sub((h-1) as usize);
+                // Grab the first non-empty offset, or (0,0) in case we don't have any.
+                let mut i = lines_idx.saturating_sub(h-1);
                 let mut s = BookState { tag_count: 0, word_offset: 0};
                 while i > 0 {
                     match ws.lines[i].xml_offset {
@@ -409,19 +416,26 @@ fn main () -> anyhow::Result<()> {
             Key::Right => println!("→"),*/
             Key::Up => {
                 termion::cursor::Goto(1,1);
-                lines_idx = lines_idx.saturating_sub(h as usize);
-                lines_idx += print_n_lines(&mut ws, lines_idx, (h-1).into())
+                lines_idx = lines_idx.saturating_sub(h);
+                lines_idx += print_n_lines(&mut ws, lines_idx, h-1)
+            }
+            Key::PageUp => {
+                termion::cursor::Goto(1,1);
+                lines_idx = lines_idx.saturating_sub(2*h-2);
+                lines_idx += print_n_lines(&mut ws, lines_idx, h-1)
             }
             Key::Down => {
-                //println!("the length of ws.lines = {}\r\n", ws.lines.len());
-                //if ws.eof {
-                //    continue;
-                //}
                 if lines_idx+1 >= ws.lines.len() {
+                  // XXX here 10 is just a magic number...
                   crank(&mut reader, &hyphenator, &mut ws, 10);
                 }
                 lines_idx += print_n_lines(&mut ws, lines_idx, 1);
-                //ws.dprint(); print!("\r");
+            }
+            Key::PageDown => {
+                if lines_idx+(h as usize) >= ws.lines.len() {
+                  crank(&mut reader, &hyphenator, &mut ws, h);
+                }
+                lines_idx += print_n_lines(&mut ws, lines_idx, h-1);
             }
             //Key::Backspace => println!("×"),
             _ => {}
