@@ -52,7 +52,14 @@ struct WriterState {
     // XXX we can use BookState here as well.
     pub xml_txt_count : usize,  // count text tags in the xml stream
     pub xml_txt_off : usize,    // offset within the text
+
+    // XXX DEBUG ONLY. We want to keep the collection of tags that we
+    // are skipping.  When the collection will become empty, all tags
+    // are handled.
+    pub tags: std::collections::HashSet::<String>
 }
+
+
 
 impl WriterState {
     fn line_done(&mut self) {
@@ -84,10 +91,18 @@ impl OutText for Standard {
         let mut chars_left = state.line_width - state.pos;
         let mut line = state.line;
 
+        if s.starts_with(" ")
+           && !state.l.ends_with(" ") && state.l.len() != 0
+           &&  chars_left >= 1 {
+            state.l.push_str (" ");
+            chars_left -= 1;
+        }
+
         for (i, w) in s.split_whitespace().enumerate() {
             let wlen = w.chars().count();
-            if wlen + 1 < chars_left {
-                let space = if i == 0 { "" } else { " " };
+
+            let space = if i == 0 { "" } else { " " };
+            if wlen + space.len() <= chars_left {
                 state.l.push_str (space);
                 state.l.push_str (w);
                 chars_left -= wlen + space.len();
@@ -104,11 +119,11 @@ impl OutText for Standard {
                 let mut hyp_found = false;
                 for &(head, hyp, tail) in triples.iter().rev() {
                     let prefix = head.chars().count() + hyp.chars().count();
-                    if prefix + 1 <= chars_left {
-                        //print!(" {}{}\r\n", head, hyp);
+                    if prefix + space.len() <= chars_left {
                         // FIXME what if the length of the tail > line_widht?
-                        //print!("{}", tail);
-                        state.l.push_str (" ");
+                        assert!(tail.chars().count() <= state.line_width);
+                        // push space only if we are not at the first word
+                        state.l.push_str (space);
                         state.l.push_str (head);
                         state.l.push_str (hyp);
                         state.line_done();
@@ -154,7 +169,7 @@ impl OutText for Standard {
             }
         }
 
-        if chars_left >= 1 {
+        if s.ends_with(" ") && chars_left >= 1 {
             state.l.push_str (" ");
             chars_left -= 1;
         }
@@ -203,7 +218,14 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         ws.lines.push(Line {xml_offset: None, content: String::from("")});
                         ws.l.push_str (&c_title.to_string());
                     }
-                    _ => (),
+                    _ => {
+                        if !skip {
+                            ws.tags.insert(std::str::from_utf8(e.name())
+                                           .unwrap().to_string());
+                        }
+                        ()
+                    }
+                    //_ => (),
                 }
             },
             Ok(Event::End(ref e)) => {
@@ -233,6 +255,13 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                   hyphenator.out (&t, ws);
                 }
             },
+            Ok(Event::Empty(e)) => {
+                if !skip {
+                    ws.tags.insert(std::str::from_utf8(e.name())
+                                    .unwrap().to_string());
+                }
+            }
+            // TODO use `anyhow` library to format a civilised error message
             Err(e) => panic!("Error at position {}: {:?}",
                                 reader.buffer_position(), e),
             Ok(Event::Eof) => {
@@ -320,6 +349,7 @@ fn main () -> anyhow::Result<()> {
     // Prepare the state structure for the xml parser.
     let lines = Vec::new();
     let l = String::from("");
+    let tags = std::collections::HashSet::<String>::new();
     assert!(w>12);
     let mut ws = WriterState { line: 0, pos: 0,
                                // TODO use config to set maxline.
@@ -328,7 +358,8 @@ fn main () -> anyhow::Result<()> {
                                lines: lines,
                                eof: false,
                                xml_txt_count: 0,
-                               xml_txt_off: 0};
+                               xml_txt_off: 0,
+                               tags: tags};
 
 
     // Prepare to start termion with terminal in raw mode.
@@ -443,5 +474,8 @@ fn main () -> anyhow::Result<()> {
     }
 
     write!(stdout, "{}", termion::cursor::Show)?;
+    for x in &ws.tags {
+        print!("{}\r\n", x);
+    }
     Ok(())
 }
