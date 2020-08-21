@@ -70,17 +70,19 @@ impl WriterState {
 
 
 trait OutText {
-    fn out (&self, s: &str, state: &mut WriterState) -> (); // WriterState;
+    fn out (&self, s: &str, state: &mut WriterState) -> ();
 }
 
 impl OutText for Standard {
-    fn out (&self, s: &str, state: &mut WriterState) -> () { //WriterState {
+    fn out (&self, s: &str, state: &mut WriterState) -> () {
+        // Sometimes we can get bogous inputs that are either empty or consist
+        // only of whitespaces.
+        if s.trim().len() == 0 {
+            return ();
+        }
+
         let mut chars_left = state.line_width - state.pos;
         let mut line = state.line;
-
-        // FIXME this is a hack, as we need to check that the last unicode
-        // character is a whitespace kind of thing.
-        let last_space = s.ends_with(" ");
 
         for (i, w) in s.split_whitespace().enumerate() {
             let wlen = w.chars().count();
@@ -152,16 +154,13 @@ impl OutText for Standard {
             }
         }
 
-        if last_space {
-            // FIXME check that we are not negative.
-            //print!(" ");
+        if chars_left >= 1 {
             state.l.push_str (" ");
             chars_left -= 1;
         }
 
         state.line = line;
         state.pos = state.line_width - chars_left;
-
     }
 }
 
