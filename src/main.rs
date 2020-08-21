@@ -18,8 +18,7 @@ use anyhow::{Context};
 use serde::{Serialize, Deserialize};
 use std::collections::BTreeMap;
 
-// FIXME use this in the WriterState as well
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 struct BookState {
     tag_count: usize,
     word_offset: usize,
@@ -31,19 +30,26 @@ struct TBconfig {
 }
 
 #[derive(Debug)]
+struct Line {
+    // If the line is coming from the FB2 file, then there should
+    // be Some(offset) indicating the source position.  Otherwise
+    // if the line is inserted by further postprocessing, its source
+    // is None.
+    xml_offset: Option<BookState>,
+    content: String
+}
+
+#[derive(Debug)]
 struct WriterState {
     pub line : usize,
     pub pos: usize,
     pub line_width: usize,
     pub l: String,
-    // We keep the buffer that we have processed so far
-    // and the xml offsets for each line, for a more precise
-    // reloading.  XXX put them together in one Vec?
-    pub lines: Vec<String>,
-    pub lines_xml_offsets: Vec<(usize, usize)>,
+    pub lines: Vec<Line>,
     pub eof: bool,
     // We use these fields to annotate the lines with their positions
     // in the xml document, so that we could restore it on the next load.
+    // XXX we can use BookState here as well.
     pub xml_txt_count : usize,  // count text tags in the xml stream
     pub xml_txt_off : usize,    // offset within the text
 }
@@ -51,9 +57,11 @@ struct WriterState {
 impl WriterState {
     fn line_done(&mut self) {
         let t = mem::replace(&mut self.l, String::from(""));
-        self.lines.push(t);
+        let o = BookState { tag_count: self.xml_txt_count,
+                            word_offset: self.xml_txt_off };
+
+        self.lines.push(Line {xml_offset: Some(o), content: t});
         self.pos = 0;
-        self.lines_xml_offsets.push((self.xml_txt_count, self.xml_txt_off));
     }
     fn _dprint(&self) {
         print!("line: {}, pos: {}, eof: {}", self.line, self.pos, self.eof);
@@ -70,7 +78,6 @@ impl OutText for Standard {
         let mut chars_left = state.line_width - state.pos;
         let mut line = state.line;
 
-
         // FIXME this is a hack, as we need to check that the last unicode
         // character is a whitespace kind of thing.
         let last_space = s.ends_with(" ");
@@ -79,7 +86,6 @@ impl OutText for Standard {
             let wlen = w.chars().count();
             if wlen + 1 < chars_left {
                 let space = if i == 0 { "" } else { " " };
-                //print!("{}{}", space,  w);
                 state.l.push_str (space);
                 state.l.push_str (w);
                 chars_left -= wlen + space.len();
@@ -131,18 +137,10 @@ impl OutText for Standard {
                         // the `w` might be shorter than the line...
                         let v: Vec<_> = w.chars().collect();
                         for l in v.chunks (state.line_width) {
-                            let t = l.iter().collect::<String>();
-                            // FIXME refactor to use line_done here.
-                            state.lines.push(t);
-                            // FIXME here the information about the xml position
-                            // of the line is quite imprecise, as the word is too
-                            // long.  We may deal with this by making the xml_pos
-                            // structure a bit more precise.
-                            state.lines_xml_offsets.push((state.xml_txt_count,
-                                                          state.xml_txt_off));
+                            state.l = l.iter().collect::<String>();
+                            state.line_done();
                             chars_left = state.line_width - l.len();
                             line += 1;
-
                         }
                     } else {
                         //print!("{}", w);
@@ -203,7 +201,7 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         ws.l.push_str (&st_bold.to_string());
                     },
                     b"title" => {
-                        //(for now) ws.lines.push(String::from(""));
+                        ws.lines.push(Line {xml_offset: None, content: String::from("")});
                         ws.l.push_str (&c_title.to_string());
                     }
                     _ => (),
@@ -258,16 +256,18 @@ fn print_n_lines (ws : &mut WriterState,
     let mut i = 0;
     while start_idx + i < ws.lines.len() && i < lines {
         // XXX this is only for debugging, we will get rid of xml offsets.
-        let xo = ws.lines_xml_offsets[start_idx+i];
-        print!("{:<4}{:<4}    {}\r\n", xo.0, xo.1, ws.lines[start_idx+i]);
+        let l = &ws.lines[start_idx+i];
+        if let Some(o) = l.xml_offset {
+            print!("{:<4}{:<4}    {}\r\n", o.tag_count,
+                                           o.word_offset, l.content);
+        }
+        else {
+            //let xo = ws.lines_xml_offsets[start_idx+i];
+            print!("{:<8}    {}\r\n", "---", l.content);
+        }
         i += 1;
     }
-    let wrote = i;
-    /* while i < lines {
-        print!("    ~\r\n");
-        i += 1;
-   / } */
-    return wrote;
+    i
 }
 
 
@@ -316,13 +316,11 @@ fn main () -> anyhow::Result<()> {
 
     // Prepare the state structure for the xml parser.
     let lines = Vec::new();
-    let lines_xml_offsets = Vec::new();
     let l = String::from("");
     let mut ws = WriterState { line: 0, pos: 0,
                                line_width: core::cmp::min((w-12).into(),80),
                                l: l,
                                lines: lines,
-                               lines_xml_offsets: lines_xml_offsets,
                                eof: false,
                                xml_txt_count: 0,
                                xml_txt_off: 0};
@@ -361,10 +359,13 @@ fn main () -> anyhow::Result<()> {
         }
         // find the index of the line that is "closest" to the
         // saved state.
-        lines_idx = ws.lines_xml_offsets.iter()
-                    .rposition(|&p| p.0 <= bstate.tag_count
-                                    && p.1 <= bstate.word_offset)
-                    .unwrap();
+        lines_idx = ws.lines.iter()
+                    .rposition(|p| match p.xml_offset {
+                                      Some(o) => o.tag_count <= bstate.tag_count
+                                                 && o.word_offset <= bstate.word_offset,
+                                      None => false
+                                    })
+                    .unwrap_or(0);
     }
 
     // print the initial screen of text.
@@ -377,10 +378,21 @@ fn main () -> anyhow::Result<()> {
             Key::Char('q') => {
                 // offset of the first visible line on the screen.
                 assert!(h>=1);
-                let (t, o) = ws.lines_xml_offsets[lines_idx.saturating_sub((h-1) as usize)];
+                //let s = ws.lines[lines_idx.saturating_sub((h-1) as usize)].xml_offset;
+                // Grab first non-empty offset, or (0,0) in case we don't have any.
+                let mut i = lines_idx.saturating_sub((h-1) as usize);
+                let mut s = BookState { tag_count: 0, word_offset: 0};
+                while i > 0 {
+                    match ws.lines[i].xml_offset {
+                        Some(o) => {
+                            s = o;
+                            break;
+                        }
+                        None => i -= 1
+                    }
+                }
                 // add or update the book position.
-                tbconf.books.insert(input_abs,
-                                    BookState {tag_count: t, word_offset: o});
+                tbconf.books.insert(input_abs, s);
 
                 // save the config into the yaml file.
                 let config_file = std::fs::OpenOptions::new()
