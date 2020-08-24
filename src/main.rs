@@ -56,7 +56,10 @@ struct WriterState {
     // XXX DEBUG ONLY. We want to keep the collection of tags that we
     // are skipping.  When the collection will become empty, all tags
     // are handled.
-    pub tags: std::collections::HashSet::<String>
+    pub tags: std::collections::HashSet::<String>,
+    // Constant prefix we are using for lists, epigraphs, etc.
+    pub prefix: String,
+    pub needs_prefix: bool,
 }
 
 
@@ -69,9 +72,41 @@ impl WriterState {
 
         self.lines.push(Line {xml_offset: Some(o), content: t});
         self.pos = 0;
+        self.needs_prefix = true;
     }
     fn _dprint(&self) {
         print!("line: {}, pos: {}, eof: {}", self.line, self.pos, self.eof);
+    }
+    fn chars_left(&self) -> usize {
+        self.line_width - self.pos
+    }
+    fn push_empty_line(&mut self) {
+        self.lines.push(Line {xml_offset: None, content: String::from("")});
+    }
+    fn change_prefix(&mut self, p: String) {
+        if self.pos != 0 { self.line_done(); }
+        self.line_width += self.prefix.chars().count();
+        self.prefix = p;
+        self.line_width -= self.prefix.chars().count();
+    }
+
+    fn push_word(&mut self, w: &str) {
+        if self.needs_prefix {
+            self.l.push_str(&self.prefix);
+            self.needs_prefix = false;
+        }
+        self.l.push_str(w);
+        // XXX we often know the length of the string, as we sometimes
+        // check whether the word would fit into the remaining line...
+        // So this is a small source of inefficiency.
+        self.pos += w.chars().count();
+    }
+    fn push_fmt(&mut self, w: &str) {
+        // XXX not sure whether we need to push prefix with
+        // or without new formatting.
+        // Add formatting symbols to the line but do not increase
+        // the position.
+        self.l.push_str(w);
     }
 }
 
@@ -88,24 +123,22 @@ impl OutText for Standard {
             return ();
         }
 
-        let mut chars_left = state.line_width - state.pos;
+        //let mut chars_left = state.prefixed_line_width() - state.pos;
         let mut line = state.line;
 
         if s.starts_with(" ")
-           && !state.l.ends_with(" ") && state.l.len() != 0
-           &&  chars_left >= 1 {
-            state.l.push_str (" ");
-            chars_left -= 1;
+           && !state.l.ends_with(" ") //&& state.l.len() != 0
+           && state.chars_left() >= 1 {
+            state.push_word(" ");
         }
 
         for (i, w) in s.split_whitespace().enumerate() {
             let wlen = w.chars().count();
 
             let space = if i == 0 { "" } else { " " };
-            if wlen + space.len() <= chars_left {
-                state.l.push_str (space);
-                state.l.push_str (w);
-                chars_left -= wlen + space.len();
+            if wlen + space.len() <= state.chars_left() {
+                state.push_word(space);
+                state.push_word(w);
             } else {
                 // Hyphenate the word
                 let mut triples = Vec::new();
@@ -118,23 +151,20 @@ impl OutText for Standard {
                 // Now iterate the tripletes
                 let mut hyp_found = false;
                 for &(head, hyp, tail) in triples.iter().rev() {
-                    let prefix = head.chars().count() + hyp.chars().count();
-                    if prefix + space.len() <= chars_left {
+                    let w = head.chars().count() + hyp.chars().count();
+                    if w + space.len() <= state.chars_left() {
                         // FIXME what if the length of the tail > line_widht?
-                        assert!(tail.chars().count() <= state.line_width);
+                        assert!(tail.chars().count()
+                                <= state.line_width);
                         // push space only if we are not at the first word
-                        state.l.push_str (space);
-                        state.l.push_str (head);
-                        state.l.push_str (hyp);
+                        state.push_word(space);
+                        state.push_word(head);
+                        state.push_word(hyp);
                         state.line_done();
-                        //let t = mem::replace(&mut state.l, String::from(""));
-                        //state.lines.push(t);
-                        state.l.push_str (tail);
 
+                        state.push_word(tail);
                         // update xml_txt_off with the current word count `i`
                         state.xml_txt_off = i;
-
-                        chars_left = state.line_width - tail.chars().count();
                         hyp_found = true;
                         line += 1;
                         break;
@@ -156,26 +186,21 @@ impl OutText for Standard {
                         for l in v.chunks (state.line_width) {
                             state.l = l.iter().collect::<String>();
                             state.line_done();
-                            chars_left = state.line_width - l.len();
                             line += 1;
                         }
                     } else {
-                        //print!("{}", w);
-                        state.l.push_str (w);
-                        chars_left = state.line_width - wlen;
+                        state.push_word(w);
                     }
                 }
 
             }
         }
 
-        if s.ends_with(" ") && chars_left >= 1 {
-            state.l.push_str (" ");
-            chars_left -= 1;
+        if s.ends_with(" ") && state.chars_left() >= 1 {
+            state.push_word(" ");
         }
 
         state.line = line;
-        state.pos = state.line_width - chars_left;
     }
 }
 
@@ -208,15 +233,23 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         // FIXME this looks weird, don't we need to make
                         // the line in the hyphenator shorter?
                         let s = "    ";
-                        ws.l.push_str(s);
-                        ws.pos = s.len();
-                    },
+                        ws.push_word(s);
+                        //ws.pos = s.len();
+                    }
+                    b"epigraph" => {
+                        //ws.line_done();
+                        let p = String::from("            | ");
+                        //ws.l.push_str(&p);
+                        //ws.prefix = p;
+                        ws.change_prefix(p)
+                    }
                     b"emphasis" => {
-                        ws.l.push_str (&st_bold.to_string());
-                    },
+                        ws.push_fmt(&st_bold.to_string());
+                    }
                     b"title" => {
-                        ws.lines.push(Line {xml_offset: None, content: String::from("")});
-                        ws.l.push_str (&c_title.to_string());
+                        //ws.lines.push(Line {xml_offset: None, content: String::from("")});
+                        ws.push_empty_line();
+                        ws.push_fmt(&c_title.to_string());
                     }
                     _ => {
                         if !skip {
@@ -236,12 +269,20 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         //(for now) ws.lines.push(String::from(""));
 
                     }
+                    b"epigraph" => {
+                        //ws.line_done();
+                        let p = String::from("");
+                        ws.change_prefix(p);
+                        //ws.line_done();
+                        ws.push_empty_line();
+                    }
                     b"emphasis" => {
-                        ws.l.push_str (&st_nobold.to_string());
+                        ws.push_fmt(&st_nobold.to_string());
                     }
                     b"title" => {
                         //(for now) ws.lines.push(String::from(""));
-                        ws.l.push_str (&c_reset.to_string());
+                        ws.push_fmt(&c_reset.to_string());
+                        ws.push_empty_line();
                     }
                     _ => (),
                 }
@@ -359,7 +400,8 @@ fn main () -> anyhow::Result<()> {
                                eof: false,
                                xml_txt_count: 0,
                                xml_txt_off: 0,
-                               tags: tags};
+                               tags: tags,
+                               prefix: String::from(""), needs_prefix: true};
 
 
     // Prepare to start termion with terminal in raw mode.
@@ -474,6 +516,7 @@ fn main () -> anyhow::Result<()> {
     }
 
     write!(stdout, "{}", termion::cursor::Show)?;
+    // XXX this is debugging info.
     for x in &ws.tags {
         print!("{}\r\n", x);
     }
