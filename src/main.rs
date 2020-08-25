@@ -39,6 +39,14 @@ struct Line {
     content: String
 }
 
+
+#[derive(Debug)]
+enum Align {
+    Left,
+    Center,
+    Right
+}
+
 #[derive(Debug)]
 struct WriterState {
     pub line : usize,
@@ -60,16 +68,29 @@ struct WriterState {
     // Constant prefix we are using for lists, epigraphs, etc.
     pub prefix: String,
     pub needs_prefix: bool,
+    pub align: Align,
 }
 
 
 
 impl WriterState {
     fn line_done(&mut self) {
-        let t = mem::replace(&mut self.l, String::from(""));
+        let mut t = mem::replace(&mut self.l, String::from(""));
         let o = BookState { tag_count: self.xml_txt_count,
                             word_offset: self.xml_txt_off };
 
+        let s = self.line_width - self.pos;
+        match self.align {
+            Align::Right => {
+               let q = " ".to_owned().repeat(s);
+               t.insert_str(self.prefix.chars().count(), &q);
+            }
+            Align::Center => {
+               let q = " ".to_owned().repeat(s/2);
+               t.insert_str(self.prefix.chars().count(), &q);
+            }
+            _ => ()
+        }
         self.lines.push(Line {xml_offset: Some(o), content: t});
         self.pos = 0;
         self.needs_prefix = true;
@@ -222,35 +243,46 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
     // we don't care about.  We set the skip flag on the beginning
     // of the tag, and unset it at the end.
     let mut skip = false;
+    let mut in_title = false;
 
     let l = ws.line + count;
     while !ws.eof && ws.line < l {
         match reader.read_event(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 match e.name() {
-                    b"description" => { skip = true; }
+
+                    b"binary" | b"description" => { skip = true; }
                     b"p" => {
-                        // FIXME this looks weird, don't we need to make
-                        // the line in the hyphenator shorter?
-                        let s = "    ";
-                        ws.push_word(s);
-                        //ws.pos = s.len();
+                        if !in_title { 
+                            let s = "    ";
+                            ws.push_word(s);
+                        }
                     }
                     b"epigraph" => {
-                        //ws.line_done();
                         let p = String::from("            | ");
-                        //ws.l.push_str(&p);
-                        //ws.prefix = p;
                         ws.change_prefix(p)
                     }
                     b"emphasis" => {
                         ws.push_fmt(&st_bold.to_string());
                     }
                     b"title" => {
-                        //ws.lines.push(Line {xml_offset: None, content: String::from("")});
+                        ws.push_empty_line();
+                        ws.align = Align::Center;
+                        ws.push_word(&"✦ ✦ ✦".to_string());
+                        ws.line_done();
+                        ws.align = Align::Left;
                         ws.push_empty_line();
                         ws.push_fmt(&c_title.to_string());
+                        ws.push_word(&"§ ".to_string());
+                        in_title = true;
                     }
+                    b"text-author" => {
+                        // XXX we assume that we don't have  nesting here.
+                        // otherwise we need to have a stack of aligns...
+                        ws.align = Align::Right;
+                        ws.push_word(&"– ".to_string());
+                    }
+                    
                     _ => {
                         if !skip {
                             ws.tags.insert(std::str::from_utf8(e.name())
@@ -263,7 +295,7 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
             },
             Ok(Event::End(ref e)) => {
                 match e.name() {
-                    b"description" => { skip = false; }
+                    b"binary" | b"description" => { skip = false; }
                     b"p" => {
                         ws.line_done();
                         //(for now) ws.lines.push(String::from(""));
@@ -283,6 +315,11 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         //(for now) ws.lines.push(String::from(""));
                         ws.push_fmt(&c_reset.to_string());
                         ws.push_empty_line();
+                        in_title = false;
+                    }
+                    b"text-author" => {
+                        ws.line_done();
+                        ws.align = Align::Left;
                     }
                     _ => (),
                 }
@@ -297,9 +334,16 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                 }
             },
             Ok(Event::Empty(e)) => {
-                if !skip {
-                    ws.tags.insert(std::str::from_utf8(e.name())
+                match e.name() {
+                    b"empty-line" => {
+                        ws.push_empty_line();
+                    }
+                    _ => {
+                        if !skip {
+                            ws.tags.insert(std::str::from_utf8(e.name())
                                     .unwrap().to_string());
+                        }
+                    }
                 }
             }
             // TODO use `anyhow` library to format a civilised error message
@@ -401,7 +445,8 @@ fn main () -> anyhow::Result<()> {
                                xml_txt_count: 0,
                                xml_txt_off: 0,
                                tags: tags,
-                               prefix: String::from(""), needs_prefix: true};
+                               prefix: String::from(""), needs_prefix: true,
+                               align: Align::Left};
 
 
     // Prepare to start termion with terminal in raw mode.

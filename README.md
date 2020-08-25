@@ -26,7 +26,16 @@ Missing features that I would like to add:
   - proper config file: right now I am using config file to read/write
     positions of the books we read, no settings like
     colors, default widths, or other options.
-  - navigate using chapters
+  - navigate using chapters.
+  - URL links.
+  - images. This is really tricky to do reliably.  We know that 
+    [w3m](https://github.com/tats/w3m/) can show inline images, which uses
+    either non-standard escape codes or [sixels](https://en.wikipedia.org/wiki/Sixel).
+    Some of the newest terminals have an extension to display images (see
+    table on the [mdcat github page](https://github.com/lunaryorn/mdcat),
+    but neither of this is standardised, and it is unclear how reliable these
+    features are.
+
 
 ## Features I am not sure about
 Features with a low priority:
