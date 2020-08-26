@@ -243,6 +243,9 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
     // we don't care about.  We set the skip flag on the beginning
     // of the tag, and unset it at the end.
     let mut skip = false;
+
+    // TODO this should be moved into the state, as this has to be
+    // persistent!
     let mut in_title = false;
 
     let l = ws.line + count;
@@ -400,10 +403,10 @@ fn main () -> anyhow::Result<()> {
     // Read the config file for the termbook, including
     // the state of the books that we have ever read.
     let config_fname = "settings.yml";
-    let config_file = std::fs::File::open(config_fname)
+    let config_file_r = std::fs::File::open(config_fname)
         .with_context(|| format!("cannot open settings `{}'", config_fname))?;
     let mut tbconf: TBconfig
-        = serde_yaml::from_reader(std::io::BufReader::new(config_file))?;
+        = serde_yaml::from_reader(std::io::BufReader::new(config_file_r))?;
 
     // The location of the book that we are about to open.
     let input = app.value_of("input").unwrap();
@@ -519,10 +522,9 @@ fn main () -> anyhow::Result<()> {
                 tbconf.books.insert(input_abs, s);
 
                 // save the config into the yaml file.
-                let config_file = std::fs::OpenOptions::new()
-                                  .write(true).open(config_fname)?;
-                serde_yaml::to_writer(std::io::BufWriter::new(&config_file), &tbconf)?;
-                config_file.sync_all()?;
+                let config_file_w = std::fs::File::create(config_fname)?;
+                serde_yaml::to_writer(std::io::BufWriter::new(&config_file_w), &tbconf)?;
+                config_file_w.sync_all()?;
                 break
             }
             /*Key::Char(c) => println!("{}", c),
