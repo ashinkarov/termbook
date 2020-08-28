@@ -155,7 +155,11 @@ impl WriterState {
             }
             self.needs_prefix = false;
         }
-        self.l.push_str(w);
+        if self.in_title {
+            self.l.push_str(&w.to_uppercase());
+        } else  {
+            self.l.push_str(&w);
+        }
         // XXX we often know the length of the string, as we sometimes
         // check whether the word would fit into the remaining line...
         // So this is a small source of inefficiency.
