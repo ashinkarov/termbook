@@ -203,7 +203,7 @@ impl OutText for Standard {
            && !state.l.ends_with(" ") //&& state.l.len() != 0
            && state.chars_left() >= 1 {
             state.push_word(" ");
-        }
+         }
 
         for (i, w) in s.split_whitespace().enumerate() {
             let wlen = w.chars().count();
@@ -432,7 +432,6 @@ fn print_n_lines (ws : &mut WriterState,
     i
 }
 
-
 fn main () -> anyhow::Result<()> {
     let app = app_from_crate!()
              .arg(
@@ -456,8 +455,6 @@ fn main () -> anyhow::Result<()> {
 
     // The location of the book that we are about to open.
     let input = app.value_of("input").unwrap();
-    let mut reader = Reader::from_file(input)
-                     .with_context(|| format!("cannot open file `{}'", input))?;
 
     // Get absolute path of the book --- we use it as a key in the file
     // that keeps states (tag_offset and word offset).
@@ -465,6 +462,21 @@ fn main () -> anyhow::Result<()> {
     let input_abs = std::fs::canonicalize(&input_rel).unwrap()
                     .into_os_string().into_string().unwrap();
 
+    let f = std::fs::File::open(&input)
+            .with_context(|| format!("cannot open file `{}'", input))?;
+
+    let mut za;
+    let mut reader : Reader<Box<dyn BufRead>> =
+    // If we have a zipped file, we'd have to unzip it first.
+    if input_rel.extension() == Some(std::ffi::OsStr::new("zip")) {
+        za = zip::read::ZipArchive::new(f)?;
+        let zf = za.by_index(0)?;
+        let zfr = std::io::BufReader::new(zf);
+        quick_xml::Reader::from_reader(Box::new(zfr))
+    } else {
+        let fr = std::io::BufReader::new(f);
+        quick_xml::Reader::from_reader(Box::new(fr))
+    };
 
     // TODO: parse <description> of the book and choose the appropriate
     // language, and possible get other meta-information.
