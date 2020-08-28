@@ -12,11 +12,12 @@ books providing:
     [hyphenation rust library](https://github.com/tapeinosyne/hyphenation))
   - scrolling
   - save/restore book position (even if the terminal size changes)
+  - read the file from zip archives (as most of the books are distributed
+    in `.fb2.zip` rather than `.fb2`).
+  - support non-utf8 encodings in `.fb2` files.
 
 ## Missing features
 Missing features that I would like to add:
-  - read the file from zip archives (as most of the books are distributed
-    in `.fb2.zip` rather than `.fb2`).
   - more fancy formatting:
     * support all the `fb2` tags;
     * find a nice style for the elements (underline, utf-8 symbols, ...)
