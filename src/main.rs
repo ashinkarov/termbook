@@ -51,7 +51,7 @@ enum Align {
 #[derive(Hash, Eq, PartialEq, Debug)]
 enum FBstyle {
     Bold,
-    Italic,
+    //Italic,
     Strong,
     Title,
     Emph,
