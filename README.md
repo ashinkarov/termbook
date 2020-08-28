@@ -15,6 +15,8 @@ books providing:
 
 ## Missing features
 Missing features that I would like to add:
+  - read the file from zip archives (as most of the books are distributed
+    in `.fb2.zip` rather than `.fb2`).
   - more fancy formatting:
     * support all the `fb2` tags;
     * find a nice style for the elements (underline, utf-8 symbols, ...)
@@ -27,8 +29,8 @@ Missing features that I would like to add:
     positions of the books we read, no settings like
     colors, default widths, or other options.
   - navigate using chapters.
-  - URL links.
-  - images. This is really tricky to do reliably.  We know that 
+  - URL links.  Internal links are related to chapter handling.
+  - images. This is really tricky to do reliably.  We know that
     [w3m](https://github.com/tats/w3m/) can show inline images, which uses
     either non-standard escape codes or [sixels](https://en.wikipedia.org/wiki/Sixel).
     Some of the newest terminals have an extension to display images (see
@@ -45,6 +47,7 @@ Features with a low priority:
   - command line: while this is fun to implement, I am not sure what kind of
     commands does the book reader really need.
   - table of contents: maybe.
+
 
 ## Development
 Please feel free to propose a feature, or better a patch or report a bug.
