@@ -47,13 +47,31 @@ enum Align {
     Right
 }
 
+
+#[derive(Hash, Eq, PartialEq, Debug)]
+enum FBstyle {
+    Bold,
+    Italic,
+    Strong,
+    Title,
+    Emph,
+    // Add more stuff
+}
+
+
 #[derive(Debug)]
 struct WriterState {
+    // Count the lines XXX do we need it?
     pub line : usize,
-    pub pos: usize,
+    // Max width of the line on the screen
     pub line_width: usize,
+    // Current buffer line we are adding words to
     pub l: String,
+    // Position in our buffer line
+    pub pos: usize,
+    // Lines we have read so far
     pub lines: Vec<Line>,
+    // Did we reach the end of file
     pub eof: bool,
     // We use these fields to annotate the lines with their positions
     // in the xml document, so that we could restore it on the next load.
@@ -68,7 +86,16 @@ struct WriterState {
     // Constant prefix we are using for lists, epigraphs, etc.
     pub prefix: String,
     pub needs_prefix: bool,
+    // What is the current alignment
     pub align: Align,
+    // Mapping of the book styles to escape sequences.
+    pub smap: std::collections::HashMap<FBstyle,(String,String)>,
+    // A list of the open style tags so far.
+    pub styles: Vec<FBstyle>,
+    // Are we outputing the title right now
+    pub in_title: bool,
+    // TODO implement parsing of a description and get rid of this field.
+    pub skip: bool,
 }
 
 
@@ -90,6 +117,12 @@ impl WriterState {
                t.insert_str(self.prefix.chars().count(), &q);
             }
             _ => ()
+        }
+        // Close all the styles for the given line
+        for s in self.styles.iter().rev() {
+            if let Some(s) = self.smap.get(&s) {
+                t.push_str(&s.1);
+            }
         }
         self.lines.push(Line {xml_offset: Some(o), content: t});
         self.pos = 0;
@@ -114,6 +147,12 @@ impl WriterState {
     fn push_word(&mut self, w: &str) {
         if self.needs_prefix {
             self.l.push_str(&self.prefix);
+            // push all the styles in the beginning of the line
+            for s in &self.styles {
+                if let Some(s) = self.smap.get(&s) {
+                  self.l.push_str(&s.0);
+                }
+            }
             self.needs_prefix = false;
         }
         self.l.push_str(w);
@@ -122,12 +161,21 @@ impl WriterState {
         // So this is a small source of inefficiency.
         self.pos += w.chars().count();
     }
-    fn push_fmt(&mut self, w: &str) {
-        // XXX not sure whether we need to push prefix with
-        // or without new formatting.
-        // Add formatting symbols to the line but do not increase
-        // the position.
-        self.l.push_str(w);
+    fn push_fmt_start(&mut self, w: FBstyle) {
+        if let Some(s) = self.smap.get(&w) {
+          self.l.push_str(&s.0);
+          self.styles.push(w);
+        }
+    }
+
+    fn push_fmt_end(&mut self, w: FBstyle) {
+        if let Some(s) = self.smap.get(&w) {
+          self.l.push_str(&s.1);
+          let s = self.styles.pop();
+          // XXX this assertion is for debugging to ensure that our
+          // open/closing tags are consistent.
+          assert_eq!(s, Some(w));
+        }
     }
 }
 
@@ -233,20 +281,6 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                       count : usize) {
 
     let mut buf = Vec::new();
-    //let st_bold = Style::new().bold();
-    let st_bold = style::Bold;
-    let st_nobold = style::NoBold;
-    let c_title = color::Fg(color::LightBlue);
-    let c_reset = color::Fg(color::Reset);
-
-    // XXX this is a hack to skip the text contained in tags that
-    // we don't care about.  We set the skip flag on the beginning
-    // of the tag, and unset it at the end.
-    let mut skip = false;
-
-    // TODO this should be moved into the state, as this has to be
-    // persistent!
-    let mut in_title = false;
 
     let l = ws.line + count;
     while !ws.eof && ws.line < l {
@@ -254,30 +288,35 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
             Ok(Event::Start(ref e)) => {
                 match e.name() {
 
-                    b"binary" | b"description" => { skip = true; }
+                    b"binary" | b"description" => { ws.skip = true; }
                     b"p" => {
-                        if !in_title { 
+                        if !ws.in_title {
                             let s = "    ";
                             ws.push_word(s);
                         }
                     }
                     b"epigraph" => {
-                        let p = String::from("            | ");
+                        let p = String::from("                 ");
                         ws.change_prefix(p)
                     }
                     b"emphasis" => {
-                        ws.push_fmt(&st_bold.to_string());
+                        ws.push_fmt_start(FBstyle::Emph);
+                    }
+                    b"strong" => {
+                        ws.push_fmt_start(FBstyle::Strong);
                     }
                     b"title" => {
                         ws.push_empty_line();
+                        // TODO Here the decoration is prefixed with some position
+                        // in the book, which is incorrect.
                         ws.align = Align::Center;
                         ws.push_word(&"✦ ✦ ✦".to_string());
                         ws.line_done();
                         ws.align = Align::Left;
                         ws.push_empty_line();
-                        ws.push_fmt(&c_title.to_string());
+                        ws.push_fmt_start(FBstyle::Title);
                         ws.push_word(&"§ ".to_string());
-                        in_title = true;
+                        ws.in_title = true;
                     }
                     b"text-author" => {
                         // XXX we assume that we don't have  nesting here.
@@ -285,9 +324,9 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         ws.align = Align::Right;
                         ws.push_word(&"– ".to_string());
                     }
-                    
+
                     _ => {
-                        if !skip {
+                        if !ws.skip {
                             ws.tags.insert(std::str::from_utf8(e.name())
                                            .unwrap().to_string());
                         }
@@ -298,7 +337,7 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
             },
             Ok(Event::End(ref e)) => {
                 match e.name() {
-                    b"binary" | b"description" => { skip = false; }
+                    b"binary" | b"description" => { ws.skip = false; }
                     b"p" => {
                         ws.line_done();
                         //(for now) ws.lines.push(String::from(""));
@@ -312,13 +351,15 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         ws.push_empty_line();
                     }
                     b"emphasis" => {
-                        ws.push_fmt(&st_nobold.to_string());
+                        ws.push_fmt_end(FBstyle::Emph);
+                    }
+                    b"strong" => {
+                        ws.push_fmt_end(FBstyle::Strong);
                     }
                     b"title" => {
-                        //(for now) ws.lines.push(String::from(""));
-                        ws.push_fmt(&c_reset.to_string());
+                        ws.push_fmt_end(FBstyle::Title);
                         ws.push_empty_line();
-                        in_title = false;
+                        ws.in_title = false;
                     }
                     b"text-author" => {
                         ws.line_done();
@@ -329,7 +370,7 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
             },
 
             Ok(Event::Text(e)) => {
-                if !skip {
+                if !ws.skip {
                   let t = e.unescape_and_decode(&reader).unwrap();
                   ws.xml_txt_count += 1;
                   ws.xml_txt_off = 0;
@@ -342,7 +383,7 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         ws.push_empty_line();
                     }
                     _ => {
-                        if !skip {
+                        if !ws.skip {
                             ws.tags.insert(std::str::from_utf8(e.name())
                                     .unwrap().to_string());
                         }
@@ -373,14 +414,15 @@ fn print_n_lines (ws : &mut WriterState,
     while start_idx + i < ws.lines.len() && i < lines {
         // XXX this is only for debugging, we will get rid of xml offsets.
         let l = &ws.lines[start_idx+i];
-        if let Some(o) = l.xml_offset {
+        print!("{:<4}{}\r\n", " ", l.content);
+        /* if let Some(o) = l.xml_offset {
             print!("{:<4}{:<4}    {}\r\n", o.tag_count,
                                            o.word_offset, l.content);
         }
         else {
             //let xo = ws.lines_xml_offsets[start_idx+i];
             print!("{:<8}    {}\r\n", "---", l.content);
-        }
+        } */
         i += 1;
     }
     i
@@ -437,7 +479,21 @@ fn main () -> anyhow::Result<()> {
     // Prepare the state structure for the xml parser.
     let lines = Vec::new();
     let l = String::from("");
+    let styles = Vec::new();
     let tags = std::collections::HashSet::<String>::new();
+
+    // TODO read this from the config file.
+    let mut smap = std::collections::HashMap::new();
+    smap.insert(FBstyle::Strong,(style::Bold.to_string(), style::NoBold.to_string()));
+    smap.insert(FBstyle::Title,(color::Fg(color::LightBlue).to_string(),
+                                color::Fg(color::Reset).to_string()));
+
+    smap.insert(FBstyle::Emph,(color::Fg(color::LightCyan).to_string(),
+                                color::Fg(color::Reset).to_string()));
+
+    smap.insert(FBstyle::Bold,(color::Fg(color::LightGreen).to_string(),
+                                color::Fg(color::Reset).to_string()));
+
     assert!(w>12);
     let mut ws = WriterState { line: 0, pos: 0,
                                // TODO use config to set maxline.
@@ -449,7 +505,10 @@ fn main () -> anyhow::Result<()> {
                                xml_txt_off: 0,
                                tags: tags,
                                prefix: String::from(""), needs_prefix: true,
-                               align: Align::Left};
+                               align: Align::Left,
+                               smap: smap,
+                               styles: styles,
+                               in_title: false, skip: false};
 
 
     // Prepare to start termion with terminal in raw mode.
