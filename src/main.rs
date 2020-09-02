@@ -25,7 +25,7 @@ use std::{
 
 
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, PartialOrd)]
 struct BookState {
     tag_count: usize,
     word_offset: usize,
@@ -80,10 +80,7 @@ struct WriterState {
     pub eof: bool,
     // We use these fields to annotate the lines with their positions
     // in the xml document, so that we could restore it on the next load.
-    // TODO we can use BookState here as well.
-    pub xml_txt_count : usize,  // count text tags in the xml stream
-    pub xml_txt_off : usize,    // offset within the text
-
+    pub xml_offset: BookState,
     // XXX DEBUG ONLY. We want to keep the collection of tags that we
     // are skipping.  When the collection will become empty, all tags
     // are handled.
@@ -113,8 +110,7 @@ struct WriterState {
 impl WriterState {
     fn line_done(&mut self) {
         let mut t = mem::replace(&mut self.l, String::from(""));
-        let o = BookState { tag_count: self.xml_txt_count,
-                            word_offset: self.xml_txt_off };
+        let o = self.xml_offset;
 
         let s = self.line_width - self.pos;
         // We might have not yet inserted the prefix, in which case
@@ -283,7 +279,7 @@ impl OutText for Standard {
 
                         state.push_word(tail);
                         // update xml_txt_off with the current word count `i`
-                        state.xml_txt_off = i;
+                        state.xml_offset.word_offset = i;
                         hyp_found = true;
                         line += 1;
                         break;
@@ -294,7 +290,7 @@ impl OutText for Standard {
                 if !hyp_found {
                     state.line_done();
                     // update xml_txt_off with the current word count `i`
-                    state.xml_txt_off = i;
+                    state.xml_offset.word_offset = i;
 
                     line += 1;
                     // If `w` is crazily long, we'll just break in the middle
@@ -464,8 +460,8 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
             Ok(Event::Text(e)) => {
                 if !ws.skip {
                   let t = e.unescape_and_decode(&reader).unwrap();
-                  ws.xml_txt_count += 1;
-                  ws.xml_txt_off = 0;
+                  ws.xml_offset.tag_count += 1;
+                  ws.xml_offset.word_offset = 0;
                   hyphenator.out (&t, ws);
                 }
             },
@@ -504,15 +500,14 @@ fn print_n_lines (ws : &mut WriterState,
 
     let mut i = 0;
     while start_idx + i < ws.lines.len() && i < lines {
-        // XXX this is only for debugging, we will get rid of xml offsets.
         let l = &ws.lines[start_idx+i];
         print!("{:<4}{}\r\n", " ", l.content);
+        // XXX this is only for debugging, we will get rid of xml offsets.
         /* if let Some(o) = l.xml_offset {
             print!("{:<4}{:<4}    {}\r\n", o.tag_count,
                                            o.word_offset, l.content);
         }
         else {
-            //let xo = ws.lines_xml_offsets[start_idx+i];
             print!("{:<8}    {}\r\n", "---", l.content);
         } */
         i += 1;
@@ -607,8 +602,7 @@ fn main () -> anyhow::Result<()> {
                                l: l,
                                lines: lines,
                                eof: false,
-                               xml_txt_count: 0,
-                               xml_txt_off: 0,
+                               xml_offset: BookState{tag_count:0, word_offset:0},
                                tags: tags,
                                prefix: String::from(""), needs_prefix: true,
                                align: Align::Left,
@@ -642,10 +636,8 @@ fn main () -> anyhow::Result<()> {
         let bstate = tbconf.books.get(&input_abs).unwrap();
         // read enough text
         while !ws.eof
-              // TODO abstract into lexicographical comparison
-              && (ws.xml_txt_count < bstate.tag_count
-                  || ws.xml_txt_count == bstate.tag_count
-                     &&  ws.xml_txt_off < bstate.word_offset) {
+              // Automatic lexicographic order due to ParialOrd.
+              && ws.xml_offset < *bstate {
             crank(&mut reader, &hyphenator, &mut ws, 100);
         }
         // find the index of the line that is "closest" to the
@@ -656,8 +648,7 @@ fn main () -> anyhow::Result<()> {
         //      at the last line of the book.
         lines_idx = ws.lines.iter()
                     .rposition(|p| match p.xml_offset {
-                                      Some(o) => o.tag_count <= bstate.tag_count
-                                                 && o.word_offset <= bstate.word_offset,
+                                      Some(o) => o <= *bstate,
                                       None => false
                                     })
                     .unwrap_or(0);
