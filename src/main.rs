@@ -102,6 +102,10 @@ struct WriterState {
     // TODO implement parsing of a description and get rid of this field.
     pub skip: bool,
     pub last_line_empty: bool,
+    // Do we expect the next paragraph to come to be the first one in
+    // the section, body, etc.  This impacts whether we add indent in the
+    // beginning of it.
+    pub first_paragraph: bool,
 }
 
 
@@ -175,10 +179,10 @@ impl WriterState {
             self.line_done();
         }
     }
-    fn change_prefix(&mut self, p: String) {
+    fn change_prefix(&mut self, p: &str){ //String) {
         if self.pos != 0 { self.line_done(); }
         self.line_width += self.prefix.chars().count();
-        self.prefix = p;
+        self.prefix = p.to_string();
         self.line_width -= self.prefix.chars().count();
     }
 
@@ -336,18 +340,14 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
 
                     b"binary" | b"description" => { ws.skip = true; }
                     b"p" => {
-                        if !ws.in_title {
-                            // FIXME don't indent the first line in the
-                            // section.
+                        if !ws.in_title && !ws.first_paragraph {
                             ws.ensure_new_line();
-                            let s = "    ";
-                            ws.push_word(s);
+                            ws.push_word("    ");
                         }
                     }
                     b"v" => {
                         if !ws.in_title {
-                            let s = "        ";
-                            ws.push_word(s);
+                            ws.push_word("        ");
                         }
                     }
                     b"stanza" | b"section" => (),
@@ -356,12 +356,11 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                     }
                     b"epigraph" => {
                         ws.align = Align::Right;
-                        let p = String::from("                 ");
-                        ws.change_prefix(p)
+                        ws.change_prefix("                 ")
                     }
                     b"cite" => {
-                        let p = String::from("                 ");
-                        ws.change_prefix(p)
+                        ws.ensure_empty_line();
+                        ws.change_prefix("                 ")
                     }
                     b"emphasis" => {
                         ws.push_fmt_start(FBstyle::Emph);
@@ -403,6 +402,9 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                     b"binary" | b"description" => { ws.skip = false; }
                     b"p" => {
                         ws.line_done();
+                        if !ws.in_title && ws.first_paragraph {
+                            ws.first_paragraph = false;
+                        }
                     }
                     b"v" => {
                         ws.line_done();
@@ -419,24 +421,18 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         // TODO Here the decoration is prefixed with some position
                         // in the book, which is incorrect.
                         ws.align = Align::Center;
-                        ws.push_word(&"✦ ✦ ✦".to_string());
+                        ws.push_word("✦ ✦ ✦");
                         ws.line_done();
-                        ws.align = Align::Left;
                         ws.push_empty_line();
+                        ws.align = Align::Left;
                     }
                     b"epigraph" => {
-                        //ws.line_done();
-                        let p = String::from("");
-                        ws.change_prefix(p);
-                        //ws.line_done();
+                        ws.change_prefix("");
                         ws.ensure_empty_line();
                         ws.align = Align::Left;
                     }
                     b"cite" => {
-                        //ws.line_done();
-                        let p = String::from("");
-                        ws.change_prefix(p);
-                        //ws.line_done();
+                        ws.change_prefix("");
                         ws.ensure_empty_line();
                     }
                     b"emphasis" => {
@@ -449,10 +445,12 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         ws.push_fmt_end(FBstyle::Title);
                         ws.ensure_empty_line();
                         ws.in_title = false;
+                        ws.first_paragraph = true;
                     }
                     b"subtitle" => {
                         ws.push_fmt_end(FBstyle::Subtitle);
                         ws.ensure_empty_line();
+                        ws.first_paragraph = true;
                         //ws.in_title = false;
                     }
                     b"text-author" => {
@@ -617,7 +615,8 @@ fn main () -> anyhow::Result<()> {
                                smap: smap,
                                styles: styles,
                                in_title: false, skip: false,
-                               last_line_empty: false};
+                               last_line_empty: false,
+                               first_paragraph: true};
 
 
     // Prepare to start termion with terminal in raw mode.
