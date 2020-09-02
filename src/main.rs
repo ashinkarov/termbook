@@ -66,7 +66,9 @@ enum FBstyle {
 
 #[derive(Debug)]
 struct WriterState {
-    // Count the lines XXX do we need it?
+    // Count the processed lines.  We use this to control how much
+    // input we need to read in order to fill the screen or print
+    // so many lines.
     pub line : usize,
     // Max width of the line on the screen
     pub line_width: usize,
@@ -110,6 +112,8 @@ struct WriterState {
 impl WriterState {
     fn line_done(&mut self) {
         let mut t = mem::replace(&mut self.l, String::from(""));
+        // TODO this is not correct, as we store the xml offset that
+        // occurs at the *end* of the line, not at the beginning...
         let o = self.xml_offset;
 
         let s = self.line_width - self.pos;
@@ -234,9 +238,6 @@ impl OutText for Standard {
             return ();
         }
 
-        //let mut chars_left = state.prefixed_line_width() - state.pos;
-        let mut line = state.line;
-
         if s.starts_with(" ")
            && !state.l.ends_with(" ") //&& state.l.len() != 0
            && state.chars_left() >= 1 {
@@ -281,7 +282,7 @@ impl OutText for Standard {
                         // update xml_txt_off with the current word count `i`
                         state.xml_offset.word_offset = i;
                         hyp_found = true;
-                        line += 1;
+                        state.line += 1;
                         break;
                     }
                 }
@@ -292,7 +293,7 @@ impl OutText for Standard {
                     // update xml_txt_off with the current word count `i`
                     state.xml_offset.word_offset = i;
 
-                    line += 1;
+                    state.line += 1;
                     // If `w` is crazily long, we'll just break in the middle
                     if wlen > state.line_width {
                         // FIXME this is quite weird now, the last chunk of
@@ -301,7 +302,7 @@ impl OutText for Standard {
                         for l in v.chunks (state.line_width) {
                             state.l = l.iter().collect::<String>();
                             state.line_done();
-                            line += 1;
+                            state.line += 1;
                         }
                     } else {
                         state.push_word(w);
@@ -314,8 +315,6 @@ impl OutText for Standard {
         if s.ends_with(" ") && state.chars_left() >= 1 {
             state.push_word(" ");
         }
-
-        state.line = line;
     }
 }
 
@@ -390,7 +389,6 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         }
                         ()
                     }
-                    //_ => (),
                 }
             },
             Ok(Event::End(ref e)) => {
@@ -685,12 +683,6 @@ fn main () -> anyhow::Result<()> {
                 config_file_w.sync_all()?;
                 break
             }
-            /*Key::Char(c) => println!("{}", c),
-            Key::Alt(c) => println!("^{}", c),
-            Key::Ctrl(c) => println!("*{}", c),
-            Key::Esc => println!("ESC"),
-            Key::Left => println!("←"),
-            Key::Right => println!("→"),*/
             Key::Up => {
                 termion::cursor::Goto(1,1);
                 lines_idx = lines_idx.saturating_sub(h);
@@ -714,7 +706,6 @@ fn main () -> anyhow::Result<()> {
                 }
                 lines_idx += print_n_lines(&mut ws, lines_idx, h-1);
             }
-            //Key::Backspace => println!("×"),
             _ => {}
         }
         stdout.flush().unwrap();
