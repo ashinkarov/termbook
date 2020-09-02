@@ -1,22 +1,29 @@
-use hyphenation::{Hyphenator,Language, Load, Standard};
-use quick_xml::{Reader};
-use quick_xml::events::Event;
+use hyphenation::{
+    Hyphenator,Language, Load, Standard
+};
+use quick_xml::{
+    Reader, events::Event
+};
+use termion::{
+    event::Key, input::TermRead, raw::IntoRawMode,
+    style,color,terminal_size
+};
+use clap::{
+    Arg,app_from_crate,
+    crate_name,crate_version,crate_authors,crate_description
+};
+use anyhow::{
+    Context
+};
+use serde::{
+    Serialize, Deserialize
+};
+use std::{
+    io::{BufRead, Write, stdout, stdin},
+    mem, collections::BTreeMap
+};
 
-use termion::event::Key;
-use termion::input::TermRead;
-use termion::raw::IntoRawMode;
-use termion::{style,color,terminal_size};
 
-use std::io::{BufRead, Write, stdout, stdin};
-use std::mem;
-
-use clap::{Arg,app_from_crate,
-           crate_name,crate_version,crate_authors,crate_description};
-
-use anyhow::{Context};
-
-use serde::{Serialize, Deserialize};
-use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 struct BookState {
@@ -39,7 +46,6 @@ struct Line {
     content: String
 }
 
-
 #[derive(Debug)]
 enum Align {
     Left,
@@ -47,13 +53,12 @@ enum Align {
     Right
 }
 
-
 #[derive(Hash, Eq, PartialEq, Debug)]
 enum FBstyle {
     Bold,
-    //Italic,
     Strong,
     Title,
+    Subtitle,
     Emph,
     // Add more stuff
 }
@@ -75,7 +80,7 @@ struct WriterState {
     pub eof: bool,
     // We use these fields to annotate the lines with their positions
     // in the xml document, so that we could restore it on the next load.
-    // XXX we can use BookState here as well.
+    // TODO we can use BookState here as well.
     pub xml_txt_count : usize,  // count text tags in the xml stream
     pub xml_txt_off : usize,    // offset within the text
 
@@ -96,6 +101,7 @@ struct WriterState {
     pub in_title: bool,
     // TODO implement parsing of a description and get rid of this field.
     pub skip: bool,
+    pub last_line_empty: bool,
 }
 
 
@@ -107,14 +113,27 @@ impl WriterState {
                             word_offset: self.xml_txt_off };
 
         let s = self.line_width - self.pos;
+        // We might have not yet inserted the prefix, in which case
+        // we are done here.
+        if t.len() == 0 {
+            self.lines.push(Line {xml_offset: Some(o), content: t});
+            self.pos = 0;
+            self.needs_prefix = true;
+            self.last_line_empty = true;
+            return
+        }
+
         match self.align {
             Align::Right => {
-               let q = " ".to_owned().repeat(s);
-               t.insert_str(self.prefix.chars().count(), &q);
+                //print!("pr = {}; t= {}; s = {}\r\n", self.prefix, t, s);
+                let q = " ".to_owned().repeat(s);
+                if s > 0 {
+                t.insert_str(self.prefix.chars().count(), &q);
+                }
             }
             Align::Center => {
-               let q = " ".to_owned().repeat(s/2);
-               t.insert_str(self.prefix.chars().count(), &q);
+                let q = " ".to_owned().repeat(s/2);
+                t.insert_str(self.prefix.chars().count(), &q);
             }
             _ => ()
         }
@@ -127,15 +146,34 @@ impl WriterState {
         self.lines.push(Line {xml_offset: Some(o), content: t});
         self.pos = 0;
         self.needs_prefix = true;
+        self.last_line_empty = false;
     }
     fn _dprint(&self) {
         print!("line: {}, pos: {}, eof: {}", self.line, self.pos, self.eof);
     }
     fn chars_left(&self) -> usize {
+        if self.pos > self.line_width {
+            print!("\r\n{}\r\n", self.l);
+            panic!("pos > line-width {} {}", self.pos, self.line_width);
+        }
         self.line_width - self.pos
     }
     fn push_empty_line(&mut self) {
         self.lines.push(Line {xml_offset: None, content: String::from("")});
+        self.last_line_empty = true;
+    }
+    fn ensure_empty_line(&mut self) {
+        // Make sure that we are done with what we have
+        self.ensure_new_line();
+        // Push the new line if it is not there yet
+        if !self.last_line_empty {
+            self.push_empty_line();
+        }
+    }
+    fn ensure_new_line(&mut self) {
+        if !self.needs_prefix {
+            self.line_done();
+        }
     }
     fn change_prefix(&mut self, p: String) {
         if self.pos != 0 { self.line_done(); }
@@ -203,7 +241,7 @@ impl OutText for Standard {
            && !state.l.ends_with(" ") //&& state.l.len() != 0
            && state.chars_left() >= 1 {
             state.push_word(" ");
-         }
+        }
 
         for (i, w) in s.split_whitespace().enumerate() {
             let wlen = w.chars().count();
@@ -213,6 +251,7 @@ impl OutText for Standard {
                 state.push_word(space);
                 state.push_word(w);
             } else {
+                // FIXME we don't need to create vector, inline the code!
                 // Hyphenate the word
                 let mut triples = Vec::new();
                 for n in self.hyphenate(w).breaks {
@@ -221,6 +260,9 @@ impl OutText for Standard {
                     triples.push((head, hyphen, tail));
                 }
 
+                // FIXME sometimes the hyphenator decides to leave a
+                // single letter either in the left or right parts of
+                // the word, and this looks ugly.  Kill this behaviour.
                 // Now iterate the tripletes
                 let mut hyp_found = false;
                 for &(head, hyp, tail) in triples.iter().rev() {
@@ -295,11 +337,29 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                     b"binary" | b"description" => { ws.skip = true; }
                     b"p" => {
                         if !ws.in_title {
+                            // FIXME don't indent the first line in the
+                            // section.
+                            ws.ensure_new_line();
                             let s = "    ";
                             ws.push_word(s);
                         }
                     }
+                    b"v" => {
+                        if !ws.in_title {
+                            let s = "        ";
+                            ws.push_word(s);
+                        }
+                    }
+                    b"stanza" | b"section" => (),
+                    b"poem" => {
+                        ws.ensure_empty_line();
+                    }
                     b"epigraph" => {
+                        ws.align = Align::Right;
+                        let p = String::from("                 ");
+                        ws.change_prefix(p)
+                    }
+                    b"cite" => {
                         let p = String::from("                 ");
                         ws.change_prefix(p)
                     }
@@ -310,22 +370,21 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                         ws.push_fmt_start(FBstyle::Strong);
                     }
                     b"title" => {
-                        ws.push_empty_line();
-                        // TODO Here the decoration is prefixed with some position
-                        // in the book, which is incorrect.
-                        ws.align = Align::Center;
-                        ws.push_word(&"✦ ✦ ✦".to_string());
-                        ws.line_done();
-                        ws.align = Align::Left;
-                        ws.push_empty_line();
+                        ws.ensure_empty_line();
                         ws.push_fmt_start(FBstyle::Title);
-                        ws.push_word(&"§ ".to_string());
                         ws.in_title = true;
+                    }
+                    b"subtitle" => {
+                        ws.ensure_empty_line();
+                        ws.push_fmt_start(FBstyle::Subtitle);
+                        ws.push_word(&"§ ".to_string());
+                        //ws.in_title = true;
                     }
                     b"text-author" => {
                         // XXX we assume that we don't have  nesting here.
                         // otherwise we need to have a stack of aligns...
                         ws.align = Align::Right;
+                        ws.ensure_new_line();
                         ws.push_word(&"– ".to_string());
                     }
 
@@ -344,15 +403,41 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                     b"binary" | b"description" => { ws.skip = false; }
                     b"p" => {
                         ws.line_done();
-                        //(for now) ws.lines.push(String::from(""));
-
+                    }
+                    b"v" => {
+                        ws.line_done();
+                    }
+                    b"poem" => {
+                        ws.ensure_empty_line();
+                    }
+                    b"stanza" => {
+                        ws.ensure_empty_line();
+                    }
+                    b"section" => {
+                        // FIXME do this only for the "outer" sections.
+                        ws.ensure_empty_line();
+                        // TODO Here the decoration is prefixed with some position
+                        // in the book, which is incorrect.
+                        ws.align = Align::Center;
+                        ws.push_word(&"✦ ✦ ✦".to_string());
+                        ws.line_done();
+                        ws.align = Align::Left;
+                        ws.push_empty_line();
                     }
                     b"epigraph" => {
                         //ws.line_done();
                         let p = String::from("");
                         ws.change_prefix(p);
                         //ws.line_done();
-                        ws.push_empty_line();
+                        ws.ensure_empty_line();
+                        ws.align = Align::Left;
+                    }
+                    b"cite" => {
+                        //ws.line_done();
+                        let p = String::from("");
+                        ws.change_prefix(p);
+                        //ws.line_done();
+                        ws.ensure_empty_line();
                     }
                     b"emphasis" => {
                         ws.push_fmt_end(FBstyle::Emph);
@@ -362,8 +447,13 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                     }
                     b"title" => {
                         ws.push_fmt_end(FBstyle::Title);
-                        ws.push_empty_line();
+                        ws.ensure_empty_line();
                         ws.in_title = false;
+                    }
+                    b"subtitle" => {
+                        ws.push_fmt_end(FBstyle::Subtitle);
+                        ws.ensure_empty_line();
+                        //ws.in_title = false;
                     }
                     b"text-author" => {
                         ws.line_done();
@@ -504,6 +594,8 @@ fn main () -> anyhow::Result<()> {
     smap.insert(FBstyle::Title,(color::Fg(color::LightBlue).to_string(),
                                 color::Fg(color::Reset).to_string()));
 
+    smap.insert(FBstyle::Subtitle,(color::Fg(color::LightBlue).to_string(),
+                                color::Fg(color::Reset).to_string()));
     smap.insert(FBstyle::Emph,(color::Fg(color::LightCyan).to_string(),
                                 color::Fg(color::Reset).to_string()));
 
@@ -513,7 +605,7 @@ fn main () -> anyhow::Result<()> {
     assert!(w>12);
     let mut ws = WriterState { line: 0, pos: 0,
                                // TODO use config to set maxline.
-                               line_width: core::cmp::min((w-12).into(),80),
+                               line_width: core::cmp::min((w-12).into(),50),
                                l: l,
                                lines: lines,
                                eof: false,
@@ -524,7 +616,8 @@ fn main () -> anyhow::Result<()> {
                                align: Align::Left,
                                smap: smap,
                                styles: styles,
-                               in_title: false, skip: false};
+                               in_title: false, skip: false,
+                               last_line_empty: false};
 
 
     // Prepare to start termion with terminal in raw mode.
