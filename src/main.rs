@@ -228,17 +228,37 @@ impl WriterState {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ProcessingError {
+    desc: String,
+}
+
+impl ProcessingError {
+    fn new(msg: &str) -> ProcessingError {
+        ProcessingError{desc: msg.to_string()}
+    }
+}
+
+impl std::fmt::Display for ProcessingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f,"{}", self.desc)
+    }
+}impl std::error::Error for ProcessingError {
+    fn description(&self) -> &str {
+        &self.desc
+    }
+}
 
 trait OutText {
-    fn out (&self, s: &str, state: &mut WriterState) -> ();
+    fn out (&self, s: &str, state: &mut WriterState) -> anyhow::Result<()>;
 }
 
 impl OutText for Standard {
-    fn out (&self, s: &str, state: &mut WriterState) -> () {
+    fn out (&self, s: &str, state: &mut WriterState) -> anyhow::Result<()> {
         // Sometimes we can get bogous inputs that are either empty or consist
         // only of whitespaces.
         if s.trim().len() == 0 {
-            return ();
+            return Ok(());
         }
 
         if s.starts_with(" ")
@@ -270,11 +290,17 @@ impl OutText for Standard {
                 // way (as long as we don't compile regrexp all the time).
                 // It is perfectly fine to reconsider this decision later
                 // in case we hit a niticeable performance penalty.
-                let caps = RE.captures(w).unwrap();
-                let wprefix = caps.get(1).unwrap().as_str();
-                let wmiddle = caps.get(2).unwrap().as_str();
-                let wpostfix = caps.get(3).unwrap().as_str();
-
+                let caps = RE.captures(w).ok_or(ProcessingError::new(
+                        &format!("regexp failed while recognising `{}'", w)))?;
+                let wprefix = caps.get(1).ok_or(ProcessingError::new(
+                        &format!("error getting caputure group 1 in `{}'", w)))?
+                        .as_str();
+                let wmiddle = caps.get(2).ok_or(ProcessingError::new(
+                        &format!("error getting caputure group 2 in `{}'", w)))?
+                        .as_str();
+                let wpostfix = caps.get(3).ok_or(ProcessingError::new(
+                        &format!("error getting caputure group 2 in `{}'", w)))?
+                        .as_str();
 
                 // FIXME we don't need to create vector, inline the code!
                 // Hyphenate the word
@@ -342,6 +368,7 @@ impl OutText for Standard {
         if s.ends_with(" ") && state.chars_left() >= 1 {
             state.push_word(" ");
         }
+        Ok(())
     }
 }
 
@@ -350,7 +377,7 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                       hyphenator: &Standard,
                       ws : &mut WriterState,
                       // how many lines do we accumulate
-                      count : usize) {
+                      count : usize) -> anyhow::Result<()> {
 
     let mut buf = Vec::new();
 
@@ -411,8 +438,8 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
 
                     _ => {
                         if !ws.skip {
-                            ws.tags.insert(std::str::from_utf8(e.name())
-                                           .unwrap().to_string());
+                            ws.tags.insert(
+                                std::str::from_utf8(e.name())?.to_string());
                         }
                         ()
                     }
@@ -484,10 +511,10 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
 
             Ok(Event::Text(e)) => {
                 if !ws.skip {
-                  let t = e.unescape_and_decode(&reader).unwrap();
+                  let t = e.unescape_and_decode(&reader)?;
                   ws.xml_offset.tag_count += 1;
                   ws.xml_offset.word_offset = 0;
-                  hyphenator.out (&t, ws);
+                  hyphenator.out (&t, ws)?;
                 }
             },
             Ok(Event::Empty(e)) => {
@@ -497,15 +524,17 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
                     }
                     _ => {
                         if !ws.skip {
-                            ws.tags.insert(std::str::from_utf8(e.name())
-                                    .unwrap().to_string());
+                            ws.tags.insert(
+                                std::str::from_utf8(e.name())?.to_string());
                         }
                     }
                 }
             }
-            // TODO use `anyhow` library to format a civilised error message
-            Err(e) => panic!("Error at position {}: {:?}",
-                                reader.buffer_position(), e),
+            Err(e) => {
+                return Err(anyhow::anyhow!("Error at position {}: {:?}",
+                           reader.buffer_position(), e))
+            }
+
             Ok(Event::Eof) => {
                 ws.line_done();
                 ws.eof = true;
@@ -515,6 +544,7 @@ fn crank<B: BufRead> (reader : &mut Reader<B>,
         }
 
     }
+    Ok(())
 }
 
 // fill the screen starting from the line at index `line_idx`,
@@ -562,12 +592,14 @@ fn main () -> anyhow::Result<()> {
         = serde_yaml::from_reader(std::io::BufReader::new(config_file_r))?;
 
     // The location of the book that we are about to open.
-    let input = app.value_of("input").unwrap();
+    let input = app.value_of("input").ok_or(ProcessingError::new(
+            &"cannot get the value of the input file"))?;
 
     // Get absolute path of the book --- we use it as a key in the file
     // that keeps states (tag_offset and word offset).
     let input_rel = std::path::PathBuf::from(input);
-    let input_abs = std::fs::canonicalize(&input_rel).unwrap()
+    let input_abs = std::fs::canonicalize(&input_rel)?
+                    // TODO get rid of this unwrap
                     .into_os_string().into_string().unwrap();
 
     let f = std::fs::File::open(&input)
@@ -651,19 +683,19 @@ fn main () -> anyhow::Result<()> {
            "{}{}{}",
            termion::clear::All,
            termion::cursor::Goto(1, 1),
-           termion::cursor::Hide)
-           .unwrap();
+           termion::cursor::Hide)?;
     stdout.flush()?;
 
     // check whether we have a saved position of that book in
     // the config file.
     if tbconf.books.contains_key(&input_abs) {
-        let bstate = tbconf.books.get(&input_abs).unwrap();
+        let bstate = tbconf.books.get(&input_abs).ok_or(ProcessingError::new(
+                &format!("error obtaining a state of `{}'", &input_abs)))?;
         // read enough text
         while !ws.eof
               // Automatic lexicographic order due to ParialOrd.
               && ws.xml_offset < *bstate {
-            crank(&mut reader, &hyphenator, &mut ws, 100);
+            crank(&mut reader, &hyphenator, &mut ws, 100)?;
         }
         // find the index of the line that is "closest" to the
         // saved state.
@@ -682,7 +714,7 @@ fn main () -> anyhow::Result<()> {
     // print the initial screen of text.
     // TODO lift this validation up.
     assert!(h>1);
-    crank(&mut reader, &hyphenator, &mut ws, h);
+    crank(&mut reader, &hyphenator, &mut ws, h)?;
     lines_idx += print_n_lines(&mut ws, lines_idx, h-1);
     stdout.flush()?;
 
@@ -723,19 +755,19 @@ fn main () -> anyhow::Result<()> {
             Key::Down => {
                 if lines_idx+1 >= ws.lines.len() {
                   // XXX here 10 is just a magic number...
-                  crank(&mut reader, &hyphenator, &mut ws, 10);
+                  crank(&mut reader, &hyphenator, &mut ws, 10)?;
                 }
                 lines_idx += print_n_lines(&mut ws, lines_idx, 1);
             }
             Key::PageDown => {
                 if lines_idx+(h as usize) >= ws.lines.len() {
-                  crank(&mut reader, &hyphenator, &mut ws, h);
+                  crank(&mut reader, &hyphenator, &mut ws, h)?;
                 }
                 lines_idx += print_n_lines(&mut ws, lines_idx, h-1);
             }
             _ => {}
         }
-        stdout.flush().unwrap();
+        stdout.flush()?;
     }
 
     write!(stdout, "{}", termion::cursor::Show)?;
