@@ -1,5 +1,5 @@
 use hyphenation::{
-    Hyphenator,Language, Load, Standard
+    Hyphenator,Language, Load, Standard,
 };
 use quick_xml::{
     Reader, events::Event
@@ -22,6 +22,9 @@ use std::{
     io::{BufRead, Write, stdout, stdin},
     mem, collections::BTreeMap
 };
+#[macro_use]
+extern crate lazy_static;
+
 
 
 
@@ -244,6 +247,9 @@ impl OutText for Standard {
             state.push_word(" ");
         }
 
+        lazy_static! {
+            static ref RE: regex::Regex = regex::Regex::new(r"(\W*)(\w*)(\W*)").unwrap();
+        }
         for (i, w) in s.split_whitespace().enumerate() {
             let wlen = w.chars().count();
 
@@ -252,11 +258,29 @@ impl OutText for Standard {
                 state.push_word(space);
                 state.push_word(w);
             } else {
+                // Note that the following regexp is used to peel off
+                // punctuation from the sequence of non-whitespace caracters
+                // into postfix, middle and prefix.  Otherwise the
+                // hyphenator below will treat the puncutation as alphabet
+                // letters resulting in weird word breaks.  While it is
+                // possible to list a simple set of punctuation characters
+                // manually {., ;, !, ...}, it is difficult to do this
+                // consistently for all the unicode symbols.  The use of
+                // regexps simply solves this problem in a reasonably cheap
+                // way (as long as we don't compile regrexp all the time).
+                // It is perfectly fine to reconsider this decision later
+                // in case we hit a niticeable performance penalty.
+                let caps = RE.captures(w).unwrap();
+                let wprefix = caps.get(1).unwrap().as_str();
+                let wmiddle = caps.get(2).unwrap().as_str();
+                let wpostfix = caps.get(3).unwrap().as_str();
+
+
                 // FIXME we don't need to create vector, inline the code!
                 // Hyphenate the word
                 let mut triples = Vec::new();
-                for n in self.hyphenate(w).breaks {
-                    let (head, tail) = w.split_at(n);
+                for n in self.hyphenate(wmiddle).breaks {
+                    let (head, tail) = wmiddle.split_at(n);
                     let hyphen = if head.ends_with('-') { "" } else { "-" };
                     triples.push((head, hyphen, tail));
                 }
@@ -267,18 +291,21 @@ impl OutText for Standard {
                 // Now iterate the tripletes
                 let mut hyp_found = false;
                 for &(head, hyp, tail) in triples.iter().rev() {
-                    let w = head.chars().count() + hyp.chars().count();
-                    if w + space.len() <= state.chars_left() {
+                    let wlen = head.chars().count() + hyp.chars().count()
+                               + wprefix.chars().count() + space.len();
+                    if wlen <= state.chars_left() {
                         // FIXME what if the length of the tail > line_widht?
-                        assert!(tail.chars().count()
+                        assert!(tail.chars().count() + wpostfix.chars().count()
                                 <= state.line_width);
                         // push space only if we are not at the first word
                         state.push_word(space);
+                        state.push_word(wprefix);
                         state.push_word(head);
                         state.push_word(hyp);
                         state.line_done();
 
                         state.push_word(tail);
+                        state.push_word(wpostfix);
                         // update xml_txt_off with the current word count `i`
                         state.xml_offset.word_offset = i;
                         hyp_found = true;
